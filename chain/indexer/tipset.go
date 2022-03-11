@@ -76,10 +76,25 @@ type TipSetIndexerOpt func(t *TipSetIndexer)
 // being persisted. The indexer may be given a time window in which to complete data extraction. The name of the
 // indexer is used as the reporter in the visor_processing_reports table.
 func NewTipSetIndexer(node tasks.DataSource, name string, tasks []string, options ...TipSetIndexerOpt) (*TipSetIndexer, error) {
+	var indexerTasks []string
+	for _, task := range tasks {
+		// if this is a task look up its corresponding tables
+		if tables, found := TaskLookup[task]; found {
+			for _, table := range tables {
+				indexerTasks = append(indexerTasks, table)
+			}
+			// it's not a task, maybe it's a table, if it is added to task list, else this is an unknown task
+		} else if _, found := TableLookup[task]; found {
+			indexerTasks = append(indexerTasks, task)
+		} else {
+			return nil, xerrors.Errorf("unknown task: %s", task)
+		}
+	}
+
 	tsi := &TipSetIndexer{
 		name:  name,
 		node:  node,
-		tasks: tasks,
+		tasks: indexerTasks,
 	}
 
 	tipsetProcessors := map[string]processor.TipSetProcessor{}
@@ -89,7 +104,7 @@ func NewTipSetIndexer(node tasks.DataSource, name string, tasks []string, option
 		"builtin": indexer.NewTask(node),
 	}
 
-	for _, t := range tasks {
+	for _, t := range indexerTasks {
 		switch t {
 		//
 		// miners

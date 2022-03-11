@@ -31,6 +31,7 @@ func init() {
 	for _, t := range indexer.AllTableTasks {
 		FullTaskSet.Add(t)
 	}
+
 }
 
 func NewGapIndexer(node lens.API, db *storage.Database, name string, minHeight, maxHeight uint64, tasks []string) *GapIndexer {
@@ -266,9 +267,9 @@ order by height desc
 `,
 		len(indexer.AllTableTasks),                 // arg 0
 		visor.ProcessingStatusInformationNullRound, // arg 1
-		g.minHeight,              // arg 2
-		g.maxHeight,              // arg 3
-		visor.ProcessingStatusOK, // arg 4
+		g.minHeight,                                // arg 2
+		g.maxHeight,                                // arg 3
+		visor.ProcessingStatusOK,                   // arg 4
 	)
 	if err != nil {
 		return nil, err

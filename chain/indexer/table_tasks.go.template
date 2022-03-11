@@ -12,3 +12,10 @@ var AllTableTasks = []string {
     {{$tn.TypeName}},
 {{- end}}
 }
+
+var TableLookup = map[string]struct{}{
+{{- range $idx, $tn := .tableNames}}
+    {{$tn.TypeName}}: {},
+{{- end}}
+}
+
