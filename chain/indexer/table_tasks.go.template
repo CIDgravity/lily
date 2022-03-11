@@ -1,0 +1,14 @@
+// Code generate by: `make tasks-gen`. DO NOT EDIT.
+package indexer
+
+const (
+{{- range $idx, $tn := .tableNames}}
+    {{$tn.TypeName}} = "{{$tn.ModelName}}"
+{{- end}}
+)
+
+var AllTableTasks = []string {
+{{- range $idx, $tn := .tableNames}}
+    {{$tn.TypeName}},
+{{- end}}
+}
