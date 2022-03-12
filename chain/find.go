@@ -267,9 +267,9 @@ order by height desc
 `,
 		len(indexer.AllTableTasks),                 // arg 0
 		visor.ProcessingStatusInformationNullRound, // arg 1
-		g.minHeight,                                // arg 2
-		g.maxHeight,                                // arg 3
-		visor.ProcessingStatusOK,                   // arg 4
+		g.minHeight,              // arg 2
+		g.maxHeight,              // arg 3
+		visor.ProcessingStatusOK, // arg 4
 	)
 	if err != nil {
 		return nil, err

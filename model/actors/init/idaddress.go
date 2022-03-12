@@ -12,15 +12,20 @@ import (
 	"github.com/filecoin-project/lily/model"
 )
 
+// IdAddress contains a mapping of ID addresses to robust addresses from the init actor’s state.
 type IdAddress struct {
-	Height    int64  `pg:",pk,notnull,use_zero"`
-	ID        string `pg:",pk,notnull"`
-	Address   string `pg:",pk,notnull"`
+	// Epoch when this address mapping was created or updated.
+	Height int64 `pg:",pk,notnull,use_zero"`
+	// ID address
+	ID string `pg:",pk,notnull"`
+	// Robust address
+	Address string `pg:",pk,notnull"`
+	// StateRoot when this address mapping was created or updated.
 	StateRoot string `pg:",pk,notnull"`
 }
 
 type IdAddressV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
+	// lint:ignore U1000 tableName is a convention used by go-pg
 	tableName struct{} `pg:"id_addresses"`
 	ID        string   `pg:",pk,notnull"`
 	Address   string   `pg:",pk,notnull"`

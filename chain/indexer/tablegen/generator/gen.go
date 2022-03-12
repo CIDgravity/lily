@@ -2,9 +2,14 @@ package generator
 
 import (
 	"bytes"
+	"go/ast"
+	"go/doc"
+	"go/parser"
+	"go/token"
 	"io/ioutil"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"text/template"
 
 	"golang.org/x/xerrors"
@@ -37,17 +42,73 @@ func Gen() error {
 }
 
 func modelTableNames() []ModelTypeNames {
+	fset := token.NewFileSet()
 	var out []ModelTypeNames
 	for _, model := range storage.Models {
-		name := getModelTableName(reflect.TypeOf(model).Elem())
-		out = append(out, name)
+		modelTableName := getModelTableName(reflect.TypeOf(model).Elem())
+
+		pkgPath := reflect.TypeOf(model).Elem().PkgPath()
+		base := strings.SplitAfter(pkgPath, "model")
+		d, err := parser.ParseDir(fset, "./model"+base[1], nil, parser.ParseComments)
+		if err != nil {
+			panic(err)
+		}
+
+		for _, f := range d {
+			p := doc.New(f, "./", 0)
+
+			for _, t := range p.Types {
+				if t.Name == modelTableName.TypeName {
+					modelTableName.ModelComment = strings.TrimSpace(strings.Replace(t.Doc, "\n", " ", -1))
+				} else {
+					continue
+				}
+				for _, spec := range t.Decl.Specs {
+
+					switch spec.(type) {
+					case *ast.TypeSpec:
+						typeSpec := spec.(*ast.TypeSpec)
+
+						switch typeSpec.Type.(type) {
+						case *ast.StructType:
+							structType := typeSpec.Type.(*ast.StructType)
+
+							for _, field := range structType.Fields.List {
+
+								switch field.Type.(type) {
+								case *ast.Ident:
+									for _, name := range field.Names {
+										modelTableName.ModelFields = append(modelTableName.ModelFields, name.Name)
+										switch j := name.Obj.Decl.(type) {
+										case *ast.Field:
+											if j.Doc == nil {
+												continue
+											}
+											for _, comment := range j.Doc.List {
+												modelTableName.FieldComment[name.Name] = strings.TrimSpace(strings.Replace(strings.TrimPrefix(comment.Text, "//"), "\n", " ", -1))
+											}
+										}
+									}
+								default:
+								}
+							}
+
+						}
+					}
+				}
+			}
+		}
+		out = append(out, modelTableName)
 	}
 	return out
 }
 
 type ModelTypeNames struct {
-	TypeName  string
-	ModelName string
+	TypeName     string
+	ModelName    string
+	ModelComment string
+	ModelFields  []string
+	FieldComment map[string]string
 }
 
 func getModelTableName(t reflect.Type) ModelTypeNames {
@@ -58,8 +119,10 @@ func getModelTableName(t reflect.Type) ModelTypeNames {
 		modelName = f.Tag.Get("pg")
 	}
 	return ModelTypeNames{
-		TypeName:  typeName,
-		ModelName: modelName,
+		TypeName:     typeName,
+		ModelName:    modelName,
+		ModelFields:  make([]string, 0),
+		FieldComment: make(map[string]string),
 	}
 }
 

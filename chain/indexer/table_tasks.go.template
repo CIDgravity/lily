@@ -19,3 +19,19 @@ var TableLookup = map[string]struct{}{
 {{- end}}
 }
 
+var TableComment = map[string]string{
+{{- range $idx, $tn := .tableNames}}
+    {{$tn.TypeName}}: `{{$tn.ModelComment}}`,
+{{- end}}
+}
+
+var TableFieldComments = map[string]map[string]string{
+{{- range $idx, $tn := .tableNames}}
+    {{$tn.TypeName}}: {
+        {{- range $name, $comment := $tn.FieldComment}}
+            "{{$name}}": "{{$comment}}",
+        {{- end}}
+    },
+{{- end}}
+}
+
