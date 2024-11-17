@@ -2,19 +2,20 @@ package modules
 
 import (
 	"context"
+	"fmt"
 	"io"
+
+	"go.uber.org/fx"
+
+	"github.com/filecoin-project/lily/lens/util"
 
 	"github.com/filecoin-project/lotus/node/modules/dtypes"
 	"github.com/filecoin-project/lotus/node/modules/helpers"
 	"github.com/filecoin-project/lotus/node/repo"
-	"go.uber.org/fx"
-	"golang.org/x/xerrors"
-
-	"github.com/filecoin-project/lily/lens/util"
 )
 
-func CacheConfig(blockstoreCacheSize uint, statestoreCacheSize uint) func(lc fx.Lifecycle, mctx helpers.MetricsCtx) (*util.CacheConfig, error) {
-	return func(lc fx.Lifecycle, mctx helpers.MetricsCtx) (*util.CacheConfig, error) {
+func CacheConfig(blockstoreCacheSize uint, statestoreCacheSize uint) func(_ fx.Lifecycle, mctx helpers.MetricsCtx) (*util.CacheConfig, error) {
+	return func(_ fx.Lifecycle, _ helpers.MetricsCtx) (*util.CacheConfig, error) {
 		return &util.CacheConfig{
 			BlockstoreCacheSize: blockstoreCacheSize,
 			StatestoreCacheSize: statestoreCacheSize,
@@ -42,7 +43,7 @@ func NewCachingUniversalBlockstore(lc fx.Lifecycle, mctx helpers.MetricsCtx, cc 
 	log.Infof("creating caching blockstore with size=%d", cc.BlockstoreCacheSize)
 	cbs, err := util.NewCachingBlockstore(bs, int(cc.BlockstoreCacheSize))
 	if err != nil {
-		return nil, xerrors.Errorf("failed to create caching blockstore: %v", err)
+		return nil, fmt.Errorf("failed to create caching blockstore: %v", err)
 	}
 
 	return cbs, err

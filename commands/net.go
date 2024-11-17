@@ -8,16 +8,19 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	lotuscli "github.com/filecoin-project/lotus/cli"
-	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/urfave/cli/v2"
-	"golang.org/x/xerrors"
+
+	lotuscli "github.com/filecoin-project/lotus/cli"
+	"github.com/filecoin-project/lotus/lib/addrutil"
 )
 
 var NetCmd = &cli.Command{
 	Name:  "net",
 	Usage: "Manage P2P Network",
 	Subcommands: []*cli.Command{
+		NetConnect,
+		NetDisconnect,
 		NetID,
 		NetListen,
 		NetPeers,
@@ -29,20 +32,17 @@ var NetCmd = &cli.Command{
 var NetID = &cli.Command{
 	Name:  "id",
 	Usage: "Get peer ID of libp2p node used by daemon",
-	Flags: flagSet(
-		clientAPIFlagSet,
-	),
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
-			return xerrors.Errorf("get api: %w", err)
+			return fmt.Errorf("get api: %w", err)
 		}
 		defer closer()
 
 		pid, err := lapi.ID(ctx)
 		if err != nil {
-			return xerrors.Errorf("get id: %w", err)
+			return fmt.Errorf("get id: %w", err)
 		}
 
 		fmt.Println(pid)
@@ -50,17 +50,76 @@ var NetID = &cli.Command{
 	},
 }
 
+var NetDisconnect = &cli.Command{
+	Name:      "disconnect",
+	Usage:     "Disconnect from a peer",
+	ArgsUsage: "[peerID]",
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		api, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		ids := cctx.Args().Slice()
+		for _, id := range ids {
+			pid, err := peer.Decode(id)
+			if err != nil {
+				fmt.Println("failure")
+				return err
+			}
+			fmt.Printf("disconnect %s: ", pid.String())
+			err = api.NetDisconnect(ctx, pid)
+			if err != nil {
+				fmt.Println("failure")
+				return err
+			}
+			fmt.Println("success")
+		}
+		return nil
+	},
+}
+
+var NetConnect = &cli.Command{
+	Name:      "connect",
+	Usage:     "Connect to a peer",
+	ArgsUsage: "[peerMultiaddr]",
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		api, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		pis, err := addrutil.ParseAddresses(ctx, cctx.Args().Slice())
+		if err != nil {
+			return err
+		}
+
+		for _, pi := range pis {
+			fmt.Printf("connect %s: ", pi.ID.String())
+			err := api.NetConnect(ctx, pi)
+			if err != nil {
+				fmt.Println("failure")
+				return err
+			}
+			fmt.Println("success")
+		}
+
+		return nil
+	},
+}
+
 var NetListen = &cli.Command{
 	Name:  "listen",
 	Usage: "List libp2p addresses daemon is listening on",
-	Flags: flagSet(
-		clientAPIFlagSet,
-	),
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
-			return xerrors.Errorf("get api: %w", err)
+			return fmt.Errorf("get api: %w", err)
 		}
 		defer closer()
 
@@ -79,26 +138,23 @@ var NetListen = &cli.Command{
 var NetPeers = &cli.Command{
 	Name:  "peers",
 	Usage: "List peers daemon is connected to",
-	Flags: flagSet(
-		clientAPIFlagSet,
-		[]cli.Flag{
-			&cli.BoolFlag{
-				Name:    "agent",
-				Aliases: []string{"a"},
-				Usage:   "Print agent name",
-			},
-			&cli.BoolFlag{
-				Name:    "extended",
-				Aliases: []string{"x"},
-				Usage:   "Print extended peer information in json",
-			},
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:    "agent",
+			Aliases: []string{"a"},
+			Usage:   "Print agent name",
 		},
-	),
+		&cli.BoolFlag{
+			Name:    "extended",
+			Aliases: []string{"x"},
+			Usage:   "Print extended peer information in json",
+		},
+	},
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
-			return xerrors.Errorf("get api: %w", err)
+			return fmt.Errorf("get api: %w", err)
 		}
 		defer closer()
 
@@ -144,9 +200,14 @@ var NetPeers = &cli.Command{
 						log.Warnf("getting agent version: %s", err)
 					}
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", peer.ID, peer.Addrs, agent)
+				_, err = fmt.Fprintf(w, "%s\t%s\t%s\n", peer.ID, peer.Addrs, agent)
+				if err != nil {
+					fmt.Printf("got error in command [peers]: %v", err)
+				}
 			}
-			w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
 
 		}
 
@@ -157,14 +218,11 @@ var NetPeers = &cli.Command{
 var NetReachability = &cli.Command{
 	Name:  "reachability",
 	Usage: "Print information about reachability from the Internet",
-	Flags: flagSet(
-		clientAPIFlagSet,
-	),
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
-			return xerrors.Errorf("get api: %w", err)
+			return fmt.Errorf("get api: %w", err)
 		}
 		defer closer()
 
@@ -174,8 +232,8 @@ var NetReachability = &cli.Command{
 		}
 
 		fmt.Println("AutoNAT status: ", i.Reachability.String())
-		if i.PublicAddr != "" {
-			fmt.Println("Public address: ", i.PublicAddr)
+		if len(i.PublicAddrs) > 0 {
+			fmt.Println("Public address: ", i.PublicAddrs)
 		}
 		return nil
 	},
@@ -184,21 +242,18 @@ var NetReachability = &cli.Command{
 var NetScores = &cli.Command{
 	Name:  "scores",
 	Usage: "List scores assigned to peers",
-	Flags: flagSet(
-		clientAPIFlagSet,
-		[]cli.Flag{
-			&cli.BoolFlag{
-				Name:    "extended",
-				Aliases: []string{"x"},
-				Usage:   "print extended peer scores in json",
-			},
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:    "extended",
+			Aliases: []string{"x"},
+			Usage:   "print extended peer scores in json",
 		},
-	),
+	},
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
-			return xerrors.Errorf("get api: %w", err)
+			return fmt.Errorf("get api: %w", err)
 		}
 		defer closer()
 
@@ -218,9 +273,14 @@ var NetScores = &cli.Command{
 		} else {
 			w := tabwriter.NewWriter(os.Stdout, 4, 0, 1, ' ', 0)
 			for _, peer := range scores {
-				fmt.Fprintf(w, "%s\t%f\n", peer.ID, peer.Score.Score)
+				_, err = fmt.Fprintf(w, "%s\t%f\n", peer.ID, peer.Score.Score)
+				if err != nil {
+					fmt.Printf("got error in command [socres]: %v", err)
+				}
 			}
-			w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
 		}
 
 		return nil

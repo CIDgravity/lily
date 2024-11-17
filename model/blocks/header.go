@@ -3,12 +3,14 @@ package blocks
 import (
 	"context"
 
-	"github.com/filecoin-project/lily/metrics"
-	"github.com/filecoin-project/lily/model"
-	"github.com/filecoin-project/lotus/chain/types"
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/filecoin-project/lily/metrics"
+	"github.com/filecoin-project/lily/model"
+
+	"github.com/filecoin-project/lotus/chain/types"
 )
 
 type BlockHeader struct {
@@ -38,18 +40,15 @@ func NewBlockHeader(bh *types.BlockHeader) *BlockHeader {
 	}
 }
 
-func (bh *BlockHeader) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (bh *BlockHeader) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "block_headers"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, bh)
 }
 
 type BlockHeaders []*BlockHeader
 
-func (bhl BlockHeaders) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (bhl BlockHeaders) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	if len(bhl) == 0 {
 		return nil
 	}
@@ -60,9 +59,6 @@ func (bhl BlockHeaders) Persist(ctx context.Context, s model.StorageBatch, versi
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "block_headers"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, len(bhl))
 	return s.PersistModel(ctx, bhl)
 }

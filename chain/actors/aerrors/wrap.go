@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/filecoin-project/go-state-types/exitcode"
 	cbor "github.com/ipfs/go-ipld-cbor"
 	"golang.org/x/xerrors"
+
+	"github.com/filecoin-project/go-state-types/exitcode"
 )
 
 // New creates a new non-fatal error
@@ -70,7 +71,7 @@ func NewfSkip(skip int, retCode exitcode.ExitCode, format string, args ...interf
 	}
 }
 
-func Fatal(message string, args ...interface{}) ActorError {
+func Fatal(message string, _ ...interface{}) ActorError {
 	return &actorError{
 		fatal: true,
 		msg:   message,
@@ -182,7 +183,7 @@ func HandleExternalError(err error, msg string) ActorError {
 		}
 	}
 
-	if xerrors.Is(err, &cbor.SerializationError{}) {
+	if errors.Is(err, &cbor.SerializationError{}) {
 		return &actorError{
 			fatal:   false,
 			retCode: 253,

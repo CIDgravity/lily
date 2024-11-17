@@ -2,11 +2,12 @@
 package power
 
 import (
+    "fmt"
+
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/big"
 	"github.com/ipfs/go-cid"
 	cbg "github.com/whyrusleeping/cbor-gen"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/cbor"
@@ -16,43 +17,56 @@ import (
 	"github.com/filecoin-project/lily/chain/actors/adt"
 	"github.com/filecoin-project/lily/chain/actors/builtin"
 {{range .versions}}
-	builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
-{{- end}}
-)
+    {{if (le . 7)}}
+	    builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
+    {{end}}
+{{end}}
+    builtin{{.latestVersion}} "github.com/filecoin-project/go-state-types/builtin"
 
-func init() {
-{{range .versions}}
-	builtin.RegisterActorState(builtin{{.}}.StoragePowerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load{{.}}(store, root)
-	})
-{{end}}}
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
+)
 
 var (
 	Address = builtin{{.latestVersion}}.StoragePowerActorAddr
 	Methods = builtin{{.latestVersion}}.MethodsPower
 )
 
-func AllCodes() []cid.Cid {
-	return []cid.Cid{ {{range .versions}}
-        builtin{{.}}.StoragePowerActorCodeID,
-    {{- end}}
-    }
-}
-
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+       if name != manifest.PowerKey {
+          return nil, fmt.Errorf("actor code is not power: %s", name)
+       }
+
+       switch actorstypes.Version(av) {
+            {{range .versions}}
+                {{if (ge . 8)}}
+                case actorstypes.Version{{.}}:
+                     return load{{.}}(store, act.Head)
+                 {{end}}
+            {{end}}
+       }
+	}
+
 	switch act.Code {
 {{range .versions}}
-	case builtin{{.}}.StoragePowerActorCodeID:
-		return load{{.}}(store, act.Head)
+    {{if (le . 7)}}
+        case builtin{{.}}.StoragePowerActorCodeID:
+            return load{{.}}(store, act.Head)
+    {{end}}
 {{end}}
 	}
-	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+
+	return nil, fmt.Errorf("unknown actor code %s", act.Code)
 }
 
 type State interface {
 	cbor.Marshaler
 
 	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
 
 	TotalLocked() (abi.TokenAmount, error)
 	TotalPower() (Claim, error)
@@ -62,6 +76,19 @@ type State interface {
 	// MinerCounts returns the number of miners. Participating is the number
 	// with power above the minimum miner threshold.
 	MinerCounts() (participating, total uint64, err error)
+	// RampStartEpoch returns the epoch at which the FIP0081 pledge calculation
+	// change begins. At and before RampStartEpoch, we use the old calculation. At
+	// RampStartEpoch + RampDurationEpochs, we use 70% old rules + 30% new
+	// calculation.
+	//
+	// This method always returns 0 prior to actors version 15.
+	RampStartEpoch() int64
+	// RampDurationEpochs returns the number of epochs over which the new FIP0081
+	// pledge calculation is ramped up.
+	//
+	// This method always returns 0 prior to actors version 15.
+	RampDurationEpochs() uint64
+
 	MinerPower(address.Address) (Claim, bool, error)
 	MinerNominalPowerMeetsConsensusMinimum(address.Address) (bool, error)
 	ListAllMiners() ([]address.Address, error)
@@ -69,7 +96,9 @@ type State interface {
 	ClaimsChanged(State) (bool, error)
 
 	// Diff helpers. Used by Diff* functions internally.
-	claims() (adt.Map, error)
+	ClaimsMap() (adt.Map, error)
+	ClaimsMapBitWidth() int
+	ClaimsMapHashFunction() func(input []byte) []byte
 	decodeClaim(*cbg.Deferred) (Claim, error)
 }
 
@@ -87,3 +116,19 @@ func AddClaims(a Claim, b Claim) Claim {
 		QualityAdjPower: big.Add(a.QualityAdjPower, b.QualityAdjPower),
 	}
 }
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{ {{range .versions}}
+        (&state{{.}}{}).Code(),
+    {{- end}}
+    }
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+        {{- range .versions}}
+            actorstypes.Version{{.}}: (&state{{.}}{}).Code(),
+        {{- end}}
+	}
+}
+

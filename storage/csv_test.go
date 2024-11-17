@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +22,7 @@ type TestModel struct {
 	Message string `pg:",pk,notnull"`
 }
 
+//revive:disable
 func (tm *TestModel) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	return s.PersistModel(ctx, tm)
 }
@@ -98,8 +98,7 @@ func TestCSVPersist(t *testing.T) {
 		Block:   "blocka",
 		Message: "msg1",
 	}
-
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -110,7 +109,7 @@ func TestCSVPersist(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "test_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "test_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,block,message\n"+
@@ -139,7 +138,7 @@ func TestCSVPersistMulti(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -150,7 +149,7 @@ func TestCSVPersistMulti(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tms...)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "test_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "test_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,block,message\n"+
@@ -197,7 +196,7 @@ func TestCSVPersistComposite(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -208,14 +207,14 @@ func TestCSVPersistComposite(t *testing.T) {
 	err = st.PersistBatch(context.Background(), comp)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "test_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "test_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,block,message\n"+
 			"42,blocka,msg1\n",
 		string(written))
 
-	otherWritten, err := ioutil.ReadFile(filepath.Join(dir, "other_test_models.csv"))
+	otherWritten, err := os.ReadFile(filepath.Join(dir, "other_test_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height\n"+
@@ -232,7 +231,7 @@ func TestCSVPersistTime(t *testing.T) {
 		Processed: now,
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -243,7 +242,7 @@ func TestCSVPersistTime(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "time_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "time_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,processed\n"+
@@ -257,7 +256,7 @@ func TestCSVPersistInterfaceNil(t *testing.T) {
 		Value:  nil,
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -268,7 +267,7 @@ func TestCSVPersistInterfaceNil(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "interface_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "interface_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,value\n"+
@@ -287,7 +286,7 @@ func TestCSVPersistInterfaceValue(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -298,7 +297,7 @@ func TestCSVPersistInterfaceValue(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "interface_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "interface_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,value\n"+
@@ -312,7 +311,7 @@ func TestCSVPersistInterfaceNilJSON(t *testing.T) {
 		Value:  nil,
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -323,7 +322,7 @@ func TestCSVPersistInterfaceNilJSON(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "interface_json_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "interface_json_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,value\n"+
@@ -337,7 +336,7 @@ func TestCSVPersistInterfaceValueJSON(t *testing.T) {
 		Value:  []string{"f083047", "f088207"},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -348,7 +347,7 @@ func TestCSVPersistInterfaceValueJSON(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "interface_json_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "interface_json_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,value\n"+
@@ -362,7 +361,7 @@ func TestCSVPersistValueJSON(t *testing.T) {
 		Value:  `{"some":"json"}`,
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -373,7 +372,7 @@ func TestCSVPersistValueJSON(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "json_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "json_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,value\n"+
@@ -387,7 +386,7 @@ func TestCSVPersistValueStringSlice(t *testing.T) {
 		Addresses: []string{"f083047", "f088207"},
 	}
 
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := os.MkdirTemp("", t.Name())
 	require.NoError(t, err)
 
 	defer os.RemoveAll(dir) // nolint: errcheck
@@ -398,7 +397,7 @@ func TestCSVPersistValueStringSlice(t *testing.T) {
 	err = st.PersistBatch(context.Background(), tm)
 	require.NoError(t, err)
 
-	written, err := ioutil.ReadFile(filepath.Join(dir, "string_slice_models.csv"))
+	written, err := os.ReadFile(filepath.Join(dir, "string_slice_models.csv"))
 	require.NoError(t, err)
 	assert.EqualValues(t,
 		"height,addresses\n"+
@@ -408,7 +407,7 @@ func TestCSVPersistValueStringSlice(t *testing.T) {
 
 type VersionedModelLatest struct {
 	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"versioned_model"`
+	tableName struct{} `pg:"versioned_model"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	Block     string   `pg:",notnull"`
 	Message   string   `pg:",notnull"`
@@ -417,7 +416,7 @@ type VersionedModelLatest struct {
 // VersionedModelV2 is an older version of VersionedModel that uses same table name but different structure
 type VersionedModelV2 struct {
 	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"versioned_model"`
+	tableName struct{} `pg:"versioned_model"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	Block     string   `pg:",notnull"`
 }
@@ -477,7 +476,7 @@ func TestCSVPersistWithVersion(t *testing.T) {
 
 	// Persist latest version
 	t.Run("latest", func(t *testing.T) {
-		dir, err := ioutil.TempDir("", strings.ReplaceAll(t.Name(), "/", "_"))
+		dir, err := os.MkdirTemp("", strings.ReplaceAll(t.Name(), "/", "_"))
 		require.NoError(t, err)
 
 		defer os.RemoveAll(dir) // nolint: errcheck
@@ -488,7 +487,7 @@ func TestCSVPersistWithVersion(t *testing.T) {
 		err = st.PersistBatch(context.Background(), vm)
 		require.NoError(t, err)
 
-		written, err := ioutil.ReadFile(filepath.Join(dir, "versioned_model.csv"))
+		written, err := os.ReadFile(filepath.Join(dir, "versioned_model.csv"))
 		require.NoError(t, err)
 		assert.EqualValues(t,
 			"height,block,message\n"+
@@ -499,7 +498,7 @@ func TestCSVPersistWithVersion(t *testing.T) {
 	// Persist version 2 of same model
 	t.Run("v2", func(t *testing.T) {
 		// Latest version
-		dir, err := ioutil.TempDir("", strings.ReplaceAll(t.Name(), "/", "_"))
+		dir, err := os.MkdirTemp("", strings.ReplaceAll(t.Name(), "/", "_"))
 		require.NoError(t, err)
 
 		defer os.RemoveAll(dir) // nolint: errcheck
@@ -510,7 +509,7 @@ func TestCSVPersistWithVersion(t *testing.T) {
 		err = st.PersistBatch(context.Background(), vm)
 		require.NoError(t, err)
 
-		written, err := ioutil.ReadFile(filepath.Join(dir, "versioned_model.csv"))
+		written, err := os.ReadFile(filepath.Join(dir, "versioned_model.csv"))
 		require.NoError(t, err)
 		assert.EqualValues(t,
 			"height,block\n"+
@@ -529,7 +528,7 @@ func TestCSVOptionOmitHeader(t *testing.T) {
 	baseName := t.Name()
 
 	runTest := func(t *testing.T, omitHeader bool, expected string) {
-		dir, err := ioutil.TempDir("", baseName)
+		dir, err := os.MkdirTemp("", baseName)
 		t.Logf("dir %s", dir)
 		require.NoError(t, err)
 
@@ -544,7 +543,7 @@ func TestCSVOptionOmitHeader(t *testing.T) {
 		err = st.PersistBatch(context.Background(), tm)
 		require.NoError(t, err)
 
-		written, err := ioutil.ReadFile(filepath.Join(dir, "test_models.csv"))
+		written, err := os.ReadFile(filepath.Join(dir, "test_models.csv"))
 		require.NoError(t, err)
 		assert.EqualValues(t, expected, string(written))
 	}
@@ -568,7 +567,7 @@ func TestCSVOptionFilePattern(t *testing.T) {
 	baseName := t.Name()
 
 	runTest := func(t *testing.T, pattern string, md Metadata, expected string) {
-		dir, err := ioutil.TempDir("", baseName)
+		dir, err := os.MkdirTemp("", baseName)
 		t.Logf("dir %s", dir)
 		require.NoError(t, err)
 

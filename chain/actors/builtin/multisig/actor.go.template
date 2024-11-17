@@ -6,46 +6,65 @@ import (
 
 	"github.com/minio/blake2b-simd"
 	cbg "github.com/whyrusleeping/cbor-gen"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/cbor"
 	"github.com/ipfs/go-cid"
 
-	msig{{.latestVersion}} "github.com/filecoin-project/specs-actors/v4/actors/builtin/multisig"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
+
+	msig{{.latestVersion}} "github.com/filecoin-project/go-state-types/builtin{{import .latestVersion}}multisig"
 {{range .versions}}
-	builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
-{{- end}}
+    {{if (le . 7)}}
+	    builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
+    {{end}}
+{{end}}
+
+    builtintypes "github.com/filecoin-project/go-state-types/builtin"
 
 	"github.com/filecoin-project/lotus/chain/types"
-
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lily/chain/actors"
 	"github.com/filecoin-project/lily/chain/actors/adt"
-	"github.com/filecoin-project/lily/chain/actors/builtin"
 )
 
-func init() {
-{{range .versions}}
-	builtin.RegisterActorState(builtin{{.}}.MultisigActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load{{.}}(store, root)
-	})
-{{end}}}
 
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+       if name != manifest.MultisigKey {
+          return nil, fmt.Errorf("actor code is not multisig: %s", name)
+       }
+
+       switch actorstypes.Version(av) {
+            {{range .versions}}
+                {{if (ge . 8)}}
+                case actorstypes.Version{{.}}:
+                     return load{{.}}(store, act.Head)
+                 {{end}}
+            {{end}}
+       }
+	}
+
 	switch act.Code {
 {{range .versions}}
-	case builtin{{.}}.MultisigActorCodeID:
-		return load{{.}}(store, act.Head)
+    {{if (le . 7)}}
+        case builtin{{.}}.MultisigActorCodeID:
+            return load{{.}}(store, act.Head)
+    {{end}}
 {{end}}
 	}
-	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+
+	return nil, fmt.Errorf("unknown actor code %s", act.Code)
 }
 
 type State interface {
 	cbor.Marshaler
 
-    Code() cid.Cid
+	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
 
 	LockedBalance(epoch abi.ChainEpoch) (abi.TokenAmount, error)
 	StartEpoch() (abi.ChainEpoch, error)
@@ -57,47 +76,15 @@ type State interface {
 	ForEachPendingTxn(func(id int64, txn Transaction) error) error
 	PendingTxnChanged(State) (bool, error)
 
-	transactions() (adt.Map, error)
+	PendingTransactionsMap() (adt.Map, error)
+	PendingTransactionsMapBitWidth() int
+	PendingTransactionsMapHashFunction() func(input []byte) []byte
 	decodeTransaction(val *cbg.Deferred) (Transaction, error)
 }
 
 type Transaction = msig{{.latestVersion}}.Transaction
 
-var Methods = builtin{{.latestVersion}}.MethodsMultisig
-
-func AllCodes() []cid.Cid {
-	return []cid.Cid{ {{range .versions}}
-        builtin{{.}}.MultisigActorCodeID,
-    {{- end}}
-    }
-}
-
-func Message(version actors.Version, from address.Address) MessageBuilder {
-	switch version {
-{{range .versions}}
-	case actors.Version{{.}}:
-		return message{{.}}{{"{"}}{{if (ge . 2)}}message0{from}{{else}}from{{end}}}
-{{end}}	default:
-		panic(fmt.Sprintf("unsupported actors version: %d", version))
-	}
-}
-
-type MessageBuilder interface {
-	// Create a new multisig with the specified parameters.
-	Create(signers []address.Address, threshold uint64,
-		vestingStart, vestingDuration abi.ChainEpoch,
-		initialAmount abi.TokenAmount) (*types.Message, error)
-
-	// Propose a transaction to the given multisig.
-	Propose(msig, target address.Address, amt abi.TokenAmount,
-		method abi.MethodNum, params []byte) (*types.Message, error)
-
-	// Approve a multisig transaction. The "hash" is optional.
-	Approve(msig address.Address, txID uint64, hash *ProposalHashData) (*types.Message, error)
-
-	// Cancel a multisig transaction. The "hash" is optional.
-	Cancel(msig address.Address, txID uint64, hash *ProposalHashData) (*types.Message, error)
-}
+var Methods = builtintypes.MethodsMultisig
 
 // these types are the same between v0 and v6
 type ProposalHashData = msig{{.latestVersion}}.ProposalHashData
@@ -111,13 +98,13 @@ func txnParams(id uint64, data *ProposalHashData) ([]byte, error) {
 	params := msig{{.latestVersion}}.TxnIDParams{ID: msig{{.latestVersion}}.TxnID(id)}
 	if data != nil {
 		if data.Requester.Protocol() != address.ID {
-			return nil, xerrors.Errorf("proposer address must be an ID address, was %s", data.Requester)
+			return nil, fmt.Errorf("proposer address must be an ID address, was %s", data.Requester)
 		}
 		if data.Value.Sign() == -1 {
-			return nil, xerrors.Errorf("proposal value must be non-negative, was %s", data.Value)
+			return nil, fmt.Errorf("proposal value must be non-negative, was %s", data.Value)
 		}
 		if data.To == address.Undef {
-			return nil, xerrors.Errorf("proposed destination address must be set")
+			return nil, fmt.Errorf("proposed destination address must be set")
 		}
 		pser, err := data.Serialize()
 		if err != nil {
@@ -128,4 +115,19 @@ func txnParams(id uint64, data *ProposalHashData) ([]byte, error) {
 	}
 
 	return actors.SerializeParams(&params)
+}
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{ {{range .versions}}
+        (&state{{.}}{}).Code(),
+    {{- end}}
+    }
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+        {{- range .versions}}
+            actorstypes.Version{{.}}: (&state{{.}}{}).Code(),
+        {{- end}}
+	}
 }

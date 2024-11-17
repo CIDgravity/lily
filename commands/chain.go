@@ -4,20 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/ipfs/go-cid"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/urfave/cli/v2"
+	"gopkg.in/cheggaaa/pb.v1"
+
 	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
 	"github.com/filecoin-project/go-state-types/big"
+	"github.com/filecoin-project/go-state-types/builtin"
+	"github.com/filecoin-project/go-state-types/manifest"
+	"github.com/filecoin-project/lily/config"
 	"github.com/filecoin-project/lily/lens/lily"
+	"github.com/filecoin-project/lily/lens/util"
+	"github.com/filecoin-project/lily/model"
+	"github.com/filecoin-project/lily/model/actors/common"
+	"github.com/filecoin-project/lily/storage"
+
 	"github.com/filecoin-project/lotus/api"
 	lotusbuild "github.com/filecoin-project/lotus/build"
+	"github.com/filecoin-project/lotus/chain/actors"
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lotus/chain/types"
 	lotuscli "github.com/filecoin-project/lotus/cli"
-	"github.com/ipfs/go-cid"
-	"github.com/urfave/cli/v2"
-	"golang.org/x/xerrors"
 )
+
+var actorVersions = lotusactors.Versions
 
 var ChainCmd = &cli.Command{
 	Name:  "chain",
@@ -30,18 +47,366 @@ var ChainCmd = &cli.Command{
 		ChainGetMsgCmd,
 		ChainListCmd,
 		ChainSetHeadCmd,
+		ChainActorCodesCmd,
+		ChainActorMethodsCmd,
+		ChainStateInspect,
+		ChainStateCompute,
+		ChainStateComputeRange,
+		ChainPruneCmd,
+	},
+}
+
+type chainActorOpts struct {
+	persist bool
+	config  string
+	storage string
+}
+
+var chainActorFlags chainActorOpts
+
+var configFlag = &cli.StringFlag{
+	Name:        "config",
+	Usage:       "Specify path of config file to use.",
+	EnvVars:     []string{"LILY_CONFIG"},
+	Destination: &chainActorFlags.config,
+}
+
+var storageFlag = &cli.StringFlag{
+	Name:        "storage",
+	Usage:       "Specify the storage to use, if persisting the displayed output.",
+	Destination: &chainActorFlags.storage,
+}
+
+var ChainActorCodesCmd = &cli.Command{
+	Name:  "actor-codes",
+	Usage: "Print actor codes and names.",
+	Flags: []cli.Flag{configFlag, storageFlag},
+	Action: func(_ *cli.Context) error {
+		manifests := manifest.GetBuiltinActorsKeys(actorstypes.Version(actorVersions[len(actorVersions)-1]))
+		t := table.NewWriter()
+		t.AppendHeader(table.Row{"name", "family", "code"})
+
+		// values that may be accessed if user wants to persist to Storage
+		var results common.ActorCodeList
+		var strg model.Storage
+		var ctx context.Context
+
+		if chainActorFlags.storage != "" {
+			results = common.ActorCodeList{}
+
+			cfg, err := config.FromFile(chainActorFlags.config)
+			if err != nil {
+				return err
+			}
+
+			md := storage.Metadata{
+				JobName: chainActorFlags.storage,
+			}
+
+			// context for db connection
+			ctx = context.Background()
+
+			sc, err := storage.NewCatalog(cfg.Storage)
+			if err != nil {
+				return err
+			}
+			strg, err = sc.Connect(ctx, chainActorFlags.storage, md)
+			if err != nil {
+				return err
+			}
+		}
+
+		for _, a := range manifests {
+			av := make(map[actorstypes.Version]cid.Cid)
+			for _, v := range actorVersions {
+				code, ok := actors.GetActorCodeID(actorstypes.Version(v), a)
+				if !ok {
+					continue
+				}
+				av[actorstypes.Version(v)] = code
+				name, family, err := util.ActorNameAndFamilyFromCode(av[actorstypes.Version(v)])
+				if err != nil {
+					return err
+				}
+				t.AppendRow(table.Row{name, family, code})
+				results = append(results, &common.ActorCode{
+					CID:  code.String(),
+					Code: name,
+				})
+
+				if chainActorFlags.storage != "" {
+					err := strg.PersistBatch(ctx, results)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		fmt.Println(t.RenderCSV())
+		return nil
+	},
+}
+
+var ChainActorMethodsCmd = &cli.Command{
+	Name:  "actor-methods",
+	Usage: "Print actor method numbers and their human readable names.",
+	Flags: []cli.Flag{configFlag, storageFlag},
+	Action: func(_ *cli.Context) error {
+		manifests := manifest.GetBuiltinActorsKeys(actorstypes.Version(actorVersions[len(actorVersions)-1]))
+		t := table.NewWriter()
+		t.AppendHeader(table.Row{"actor_family", "method_name", "method_number"})
+
+		// values that may be accessed if user wants to persist to Storage
+		var results common.ActorMethodList
+		var strg model.Storage
+		var ctx context.Context
+
+		if chainActorFlags.persist {
+			cfg, err := config.FromFile(chainActorFlags.config)
+			if err != nil {
+				return err
+			}
+
+			md := storage.Metadata{
+				JobName: chainActorFlags.storage,
+			}
+
+			// context for db connection
+			ctx = context.Background()
+
+			sc, err := storage.NewCatalog(cfg.Storage)
+			if err != nil {
+				return err
+			}
+			strg, err = sc.Connect(ctx, chainActorFlags.storage, md)
+			if err != nil {
+				return err
+			}
+		}
+
+		for _, a := range manifests {
+			av := make(map[actorstypes.Version]cid.Cid)
+			for _, v := range actorVersions {
+				code, ok := actors.GetActorCodeID(actorstypes.Version(v), a)
+				if !ok {
+					continue
+				}
+				av[actorstypes.Version(v)] = code
+			}
+
+			var err error
+			if results, err = printActorMethods(a); err != nil {
+				return err
+			}
+
+			for _, result := range results {
+				t.AppendRow(table.Row{result.Family, result.Method, result.MethodName})
+				t.AppendSeparator()
+			}
+
+			if chainActorFlags.persist {
+				err := strg.PersistBatch(ctx, results)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		fmt.Println(t.RenderCSV())
+		return nil
+	},
+}
+
+func marshalReport(reports []*lily.StateReport, verbose bool) ([]byte, error) {
+	type stateHeights struct {
+		Newest int64 `json:"newest"`
+		Oldest int64 `json:"oldest"`
+	}
+	type summarizedHeights struct {
+		Messages   stateHeights `json:"messages"`
+		StateRoots stateHeights `json:"stateroots"`
+	}
+	type hasState struct {
+		Messages  bool `json:"messages"`
+		Receipts  bool `json:"receipts"`
+		StateRoot bool `json:"stateroot"`
+	}
+	type stateReport struct {
+		Summary summarizedHeights  `json:"summary"`
+		Detail  map[int64]hasState `json:"details,omitempty"`
+	}
+
+	var (
+		details         = make(map[int64]hasState)
+		headSet         bool
+		head            = reports[0]
+		oldestMessage   = &lily.StateReport{}
+		oldestStateRoot = &lily.StateReport{}
+	)
+
+	for _, r := range reports {
+		if verbose {
+			details[r.Height] = hasState{
+				Messages:  r.HasMessages,
+				Receipts:  r.HasReceipts,
+				StateRoot: r.HasState,
+			}
+		}
+		if !headSet && (r.HasState && r.HasMessages && r.HasReceipts) {
+			head = r
+			headSet = true
+		}
+		if r.HasState {
+			oldestStateRoot = r
+		}
+		if r.HasMessages {
+			oldestMessage = r
+		}
+	}
+
+	compiledReport := stateReport{
+		Detail: details,
+		Summary: summarizedHeights{
+			Messages:   stateHeights{Newest: head.Height, Oldest: oldestMessage.Height},
+			StateRoots: stateHeights{Newest: head.Height, Oldest: oldestStateRoot.Height},
+		},
+	}
+
+	reportOut, err := json.Marshal(compiledReport)
+	if err != nil {
+		return nil, err
+	}
+
+	return reportOut, nil
+}
+
+var ChainStateInspect = &cli.Command{
+	Name:  "state-inspect",
+	Usage: "Returns details about each epoch's state in the local datastore",
+	Flags: []cli.Flag{
+		&cli.Uint64Flag{
+			Name:    "limit",
+			Aliases: []string{"l"},
+			Value:   100,
+			Usage:   "Limit traversal of statetree when searching for oldest state by `N` heights starting from most recent",
+		},
+		&cli.BoolFlag{
+			Name:    "verbose",
+			Aliases: []string{"v"},
+			Usage:   "Include detailed information about the completeness of state for all traversed height(s) starting from most recent",
+		},
+	},
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		lapi, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		report, err := lapi.FindOldestState(ctx, cctx.Int64("limit"))
+		if err != nil {
+			return err
+		}
+		sort.Slice(report, func(i, j int) bool {
+			return report[i].Height > report[j].Height
+		})
+
+		out, err := marshalReport(report, cctx.Bool("verbose"))
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
+	},
+}
+
+var ChainStateCompute = &cli.Command{
+	Name:  "state-compute",
+	Usage: "Generates the state at epoch `N`",
+	Flags: []cli.Flag{
+		&cli.Uint64Flag{
+			Name:     "epoch",
+			Aliases:  []string{"e"},
+			Required: true,
+		},
+	},
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		lapi, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		head, err := lapi.ChainHead(ctx)
+		if err != nil {
+			return err
+		}
+		ts, err := lapi.ChainGetTipSetByHeight(ctx, abi.ChainEpoch(cctx.Uint64("epoch")), head.Key())
+		if err != nil {
+			return err
+		}
+
+		_, err = lapi.StateCompute(ctx, ts.Key())
+		return err
+
+	},
+}
+
+var ChainStateComputeRange = &cli.Command{
+	Name:  "state-compute-range",
+	Usage: "Generates the state from epoch `FROM` to epoch `TO`",
+	Flags: []cli.Flag{
+		&cli.Uint64Flag{
+			Name:     "from",
+			Required: true,
+		},
+		&cli.Uint64Flag{
+			Name:     "to",
+			Required: true,
+		},
+	},
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		lapi, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		head, err := lapi.ChainHead(ctx)
+		if err != nil {
+			return err
+		}
+		bar := pb.StartNew(int(cctx.Uint64("to") - cctx.Uint64("from")))
+		bar.ShowTimeLeft = true
+		bar.ShowPercent = true
+		bar.Units = pb.U_NO
+		for i := cctx.Int64("from"); i <= cctx.Int64("to"); i++ {
+			ts, err := lapi.ChainGetTipSetByHeight(ctx, abi.ChainEpoch(i), head.Key())
+			if err != nil {
+				return err
+			}
+
+			_, err = lapi.StateCompute(ctx, ts.Key())
+			if err != nil {
+				return err
+			}
+			bar.Add(1)
+		}
+		bar.Finish()
+		return nil
+
 	},
 }
 
 var ChainHeadCmd = &cli.Command{
 	Name:  "head",
 	Usage: "Print chain head",
-	Flags: flagSet(
-		clientAPIFlagSet,
-	),
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -63,17 +428,15 @@ var ChainGetBlock = &cli.Command{
 	Name:      "getblock",
 	Usage:     "Get a block and print its details",
 	ArgsUsage: "[blockCid]",
-	Flags: flagSet(
-		clientAPIFlagSet,
-		[]cli.Flag{
-			&cli.BoolFlag{
-				Name:  "raw",
-				Usage: "print just the raw block header",
-			},
-		}),
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "raw",
+			Usage: "print just the raw block header",
+		},
+	},
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -90,7 +453,7 @@ var ChainGetBlock = &cli.Command{
 
 		blk, err := lapi.ChainGetBlock(ctx, bcid)
 		if err != nil {
-			return xerrors.Errorf("get block failed: %w", err)
+			return fmt.Errorf("get block failed: %w", err)
 		}
 
 		if cctx.Bool("raw") {
@@ -105,18 +468,18 @@ var ChainGetBlock = &cli.Command{
 
 		msgs, err := lapi.ChainGetBlockMessages(ctx, bcid)
 		if err != nil {
-			return xerrors.Errorf("failed to get messages: %w", err)
+			return fmt.Errorf("failed to get messages: %w", err)
 		}
 
 		pmsgs, err := lapi.ChainGetParentMessages(ctx, bcid)
 		if err != nil {
-			return xerrors.Errorf("failed to get parent messages: %w", err)
+			return fmt.Errorf("failed to get parent messages: %w", err)
 		}
 
 		recpts, err := lapi.ChainGetParentReceipts(ctx, bcid)
 		if err != nil {
 			log.Warn(err)
-			// return xerrors.Errorf("failed to get receipts: %w", err)
+			// return fmt.Errorf("failed to get receipts: %w", err)
 		}
 
 		cblock := struct {
@@ -155,12 +518,9 @@ var ChainReadObjCmd = &cli.Command{
 	Name:      "read-obj",
 	Usage:     "Read the raw bytes of an object",
 	ArgsUsage: "[objectCid]",
-	Flags: flagSet(
-		clientAPIFlagSet,
-	),
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -190,17 +550,15 @@ var ChainStatObjCmd = &cli.Command{
    When a base is provided it will be walked first, and all links visisted
    will be ignored when the passed in object is walked.
 `,
-	Flags: flagSet(
-		clientAPIFlagSet,
-		[]cli.Flag{
-			&cli.StringFlag{
-				Name:  "base",
-				Usage: "ignore links found in this obj",
-			},
-		}),
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:  "base",
+			Usage: "ignore links found in this obj",
+		},
+	},
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -240,7 +598,7 @@ var ChainGetMsgCmd = &cli.Command{
 		}
 
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -248,12 +606,12 @@ var ChainGetMsgCmd = &cli.Command{
 
 		c, err := cid.Decode(cctx.Args().First())
 		if err != nil {
-			return xerrors.Errorf("failed to parse cid input: %w", err)
+			return fmt.Errorf("failed to parse cid input: %w", err)
 		}
 
 		mb, err := lapi.ChainReadObj(ctx, c)
 		if err != nil {
-			return xerrors.Errorf("failed to read object: %w", err)
+			return fmt.Errorf("failed to read object: %w", err)
 		}
 
 		var i interface{}
@@ -261,7 +619,7 @@ var ChainGetMsgCmd = &cli.Command{
 		if err != nil {
 			sm, err := types.DecodeSignedMessage(mb)
 			if err != nil {
-				return xerrors.Errorf("failed to decode object as a message: %w", err)
+				return fmt.Errorf("failed to decode object as a message: %w", err)
 			}
 			i = sm
 		} else {
@@ -282,24 +640,22 @@ var ChainListCmd = &cli.Command{
 	Name:    "list",
 	Aliases: []string{"love"},
 	Usage:   "View a segment of the chain",
-	Flags: flagSet(
-		clientAPIFlagSet,
-		[]cli.Flag{
-			&cli.Uint64Flag{Name: "height", DefaultText: "current head"},
-			&cli.IntFlag{Name: "count", Value: 30},
-			&cli.StringFlag{
-				Name:  "format",
-				Usage: "specify the format to print out tipsets",
-				Value: "<height>: (<time>) <blocks>",
-			},
-			&cli.BoolFlag{
-				Name:  "gas-stats",
-				Usage: "view gas statistics for the chain",
-			},
-		}),
+	Flags: []cli.Flag{
+		&cli.Uint64Flag{Name: "height", DefaultText: "current head"},
+		&cli.IntFlag{Name: "count", Value: 30},
+		&cli.StringFlag{
+			Name:  "format",
+			Usage: "specify the format to print out tipsets",
+			Value: "<height>: (<time>) <blocks>",
+		},
+		&cli.BoolFlag{
+			Name:  "gas-stats",
+			Usage: "view gas statistics for the chain",
+		},
+	},
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -413,21 +769,19 @@ var ChainSetHeadCmd = &cli.Command{
 	Name:      "sethead",
 	Usage:     "manually set the local nodes head tipset (Caution: normally only used for recovery)",
 	ArgsUsage: "[tipsetkey]",
-	Flags: flagSet(
-		clientAPIFlagSet,
-		[]cli.Flag{
-			&cli.BoolFlag{
-				Name:  "genesis",
-				Usage: "reset head to genesis",
-			},
-			&cli.Uint64Flag{
-				Name:  "epoch",
-				Usage: "reset head to given epoch",
-			},
-		}),
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "genesis",
+			Usage: "reset head to genesis",
+		},
+		&cli.Uint64Flag{
+			Name:  "epoch",
+			Usage: "reset head to given epoch",
+		},
+	},
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}
@@ -452,11 +806,108 @@ var ChainSetHeadCmd = &cli.Command{
 			return fmt.Errorf("must pass cids for tipset to set as head")
 		}
 
-		if err := lapi.ChainSetHead(ctx, ts.Key()); err != nil {
+		err = lapi.ChainSetHead(ctx, ts.Key())
+
+		return err
+	},
+}
+
+var chainPruneHotGCCmd = &cli.Command{
+	Name:  "hot",
+	Usage: "run online (badger vlog) garbage collection on hotstore",
+	Flags: []cli.Flag{
+		&cli.Float64Flag{Name: "threshold", Value: 0.01, Usage: "Threshold of vlog garbage for gc"},
+		&cli.BoolFlag{Name: "periodic", Value: false, Usage: "Run periodic gc over multiple vlogs. Otherwise run gc once"},
+	},
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		lapi, closer, err := GetAPI(ctx)
+		if err != nil {
 			return err
 		}
+		defer closer()
 
-		return nil
+		opts := api.HotGCOpts{}
+		opts.Periodic = cctx.Bool("periodic")
+		opts.Threshold = cctx.Float64("threshold")
+
+		gcStart := time.Now()
+		err = lapi.ChainHotGC(ctx, opts)
+		gcTime := time.Since(gcStart)
+		fmt.Printf("Online GC took %v (periodic <%t> threshold <%f>)", gcTime, opts.Periodic, opts.Threshold)
+		return err
+	},
+}
+
+var chainPruneHotMovingGCCmd = &cli.Command{
+	Name:  "hot-moving",
+	Usage: "run moving gc on hotstore",
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		lapi, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+		opts := api.HotGCOpts{}
+		opts.Moving = true
+
+		gcStart := time.Now()
+		err = lapi.ChainHotGC(ctx, opts)
+		gcTime := time.Since(gcStart)
+		fmt.Printf("Moving GC took %v", gcTime)
+		return err
+	},
+}
+
+var chainPruneColdCmd = &cli.Command{
+	Name:  "compact-cold",
+	Usage: "force splitstore compaction on cold store state and run gc",
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "online-gc",
+			Value: false,
+			Usage: "use online gc for garbage collecting the coldstore",
+		},
+		&cli.BoolFlag{
+			Name:  "moving-gc",
+			Value: false,
+			Usage: "use moving gc for garbage collecting the coldstore",
+		},
+		&cli.IntFlag{
+			Name:  "retention",
+			Value: -1,
+			Usage: "specify state retention policy",
+		},
+	},
+	Action: func(cctx *cli.Context) error {
+		ctx := lotuscli.ReqContext(cctx)
+		lapi, closer, err := GetAPI(ctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		opts := api.PruneOpts{}
+		if cctx.Bool("online-gc") {
+			opts.MovingGC = false
+		}
+		if cctx.Bool("moving-gc") {
+			opts.MovingGC = true
+		}
+		opts.RetainState = int64(cctx.Int("retention"))
+
+		return lapi.ChainPrune(ctx, opts)
+	},
+}
+
+var ChainPruneCmd = &cli.Command{
+	Name:  "prune",
+	Usage: "splitstore gc",
+	Subcommands: []*cli.Command{
+		chainPruneColdCmd,
+		chainPruneHotGCCmd,
+		chainPruneHotMovingGCCmd,
 	},
 }
 
@@ -499,4 +950,67 @@ func parseTipSet(ctx context.Context, api lily.LilyAPI, vals []string) (*types.T
 	}
 
 	return types.NewTipSet(headers)
+}
+
+func printActorMethods(actorKey string) (common.ActorMethodList, error) {
+	var (
+		methodName           string
+		methodNumber         uint64
+		correspondingMethods interface{}
+		actorMethodList      = common.ActorMethodList{}
+	)
+
+	switch actorKey {
+	case manifest.AccountKey:
+		correspondingMethods = builtin.MethodsAccount
+	case manifest.CronKey:
+		correspondingMethods = builtin.MethodsCron
+	case manifest.DatacapKey:
+		correspondingMethods = builtin.MethodsDatacap
+	case manifest.EamKey:
+		correspondingMethods = builtin.MethodsEAM
+	case manifest.EthAccountKey:
+		correspondingMethods = builtin.MethodsEthAccount
+	case manifest.EvmKey:
+		correspondingMethods = builtin.MethodsEVM
+	case manifest.MarketKey:
+		correspondingMethods = builtin.MethodsMarket
+	case manifest.MinerKey:
+		correspondingMethods = builtin.MethodsMiner
+	case manifest.InitKey:
+		correspondingMethods = builtin.MethodsInit
+	case manifest.MultisigKey:
+		correspondingMethods = builtin.MethodsMultisig
+	case manifest.PaychKey:
+		correspondingMethods = builtin.MethodsPaych
+	case manifest.PlaceholderKey:
+		correspondingMethods = builtin.MethodsPlaceholder
+	case manifest.PowerKey:
+		correspondingMethods = builtin.MethodsPower
+	case manifest.RewardKey:
+		correspondingMethods = builtin.MethodsReward
+	case manifest.SystemKey:
+		correspondingMethods = nil
+	case manifest.VerifregKey:
+		correspondingMethods = builtin.MethodsVerifiedRegistry
+	default:
+		return nil, fmt.Errorf("unknown actor key: %s", actorKey)
+	}
+
+	// Check if correspondingMethods is nil
+	if correspondingMethods == nil {
+		return nil, nil
+	}
+
+	for i := 0; i < reflect.TypeOf(correspondingMethods).NumField(); i++ {
+		methodName = reflect.TypeOf(correspondingMethods).Field(i).Name
+		methodNumber = reflect.ValueOf(correspondingMethods).Field(i).Uint()
+		actorMethodList = append(actorMethodList, &common.ActorMethod{
+			Family:     actorKey,
+			MethodName: methodName,
+			Method:     methodNumber,
+		})
+	}
+
+	return actorMethodList, nil
 }

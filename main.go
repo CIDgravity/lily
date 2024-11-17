@@ -8,14 +8,16 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/filecoin-project/lotus/build"
-	"github.com/filecoin-project/lotus/chain/consensus/filcns"
-	"github.com/filecoin-project/lotus/node/repo"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/urfave/cli/v2"
 
 	"github.com/filecoin-project/lily/commands"
+	"github.com/filecoin-project/lily/commands/job"
 	"github.com/filecoin-project/lily/version"
+
+	"github.com/filecoin-project/lotus/build"
+	"github.com/filecoin-project/lotus/chain/consensus/filcns"
+	"github.com/filecoin-project/lotus/node/repo"
 )
 
 var log = logging.Logger("lily/main")
@@ -69,78 +71,103 @@ func main() {
 		})
 	}
 
-	cli.AppHelpTemplate = commands.AppHelpTemplate
-
 	app := &cli.App{
 		Name:    "lily",
 		Usage:   "a tool for capturing on-chain state from the filecoin network",
-		Version: fmt.Sprintf("VisorVersion: \t%s\n   NewestNetworkVersion: \t%d\n   GenesisFile: \t%s\n   DevNet: \t%t\n   UserVersion: \t%s\n   UpgradeSchedule: \n%s", version.String(), build.NewestNetworkVersion, build.GenesisFile, build.Devnet, build.UserVersion(), up.String()),
+		Version: fmt.Sprintf("Lily Version: \t%s\n   NewestNetworkVersion: \t%d\n   GenesisFile: \t%s\n   DevNet: \t%t\n   UserVersion: \t%s\n   UpgradeSchedule: \n%s", version.String(), build.TestNetworkVersion, build.GenesisFile, build.Devnet, string(build.NodeUserVersion()), up.String()),
 		Flags: []cli.Flag{
+			commands.ClientAPIFlag,
+			commands.ClientTokenFlag,
 			&cli.StringFlag{
 				Name:        "log-level",
 				EnvVars:     []string{"GOLOG_LOG_LEVEL"},
 				Value:       "info",
 				Usage:       "Set the default log level for all loggers to `LEVEL`",
-				Destination: &commands.VisorLogFlags.LogLevel,
+				Destination: &commands.LilyLogFlags.LogLevel,
 			},
 			&cli.StringFlag{
 				Name:        "log-level-named",
 				EnvVars:     []string{"LILY_LOG_LEVEL_NAMED"},
 				Value:       "",
 				Usage:       "A comma delimited list of named loggers and log levels formatted as name:level, for example 'logger1:debug,logger2:info'",
-				Destination: &commands.VisorLogFlags.LogLevelNamed,
+				Destination: &commands.LilyLogFlags.LogLevelNamed,
 			},
 			&cli.BoolFlag{
 				Name:        "jaeger-tracing",
 				EnvVars:     []string{"LILY_JAEGER_TRACING"},
 				Value:       false,
-				Destination: &commands.VisorTracingFlags.Enabled,
+				Destination: &commands.LilyTracingFlags.Enabled,
 			},
 			&cli.StringFlag{
 				Name:        "jaeger-service-name",
 				EnvVars:     []string{"LILY_JAEGER_SERVICE_NAME"},
 				Value:       "lily",
-				Destination: &commands.VisorTracingFlags.ServiceName,
+				Destination: &commands.LilyTracingFlags.ServiceName,
 			},
 			&cli.StringFlag{
 				Name:        "jaeger-provider-url",
 				EnvVars:     []string{"LILY_JAEGER_PROVIDER_URL"},
 				Value:       "http://localhost:14268/api/traces",
-				Destination: &commands.VisorTracingFlags.ProviderURL,
+				Destination: &commands.LilyTracingFlags.ProviderURL,
 			},
 			&cli.Float64Flag{
 				Name:        "jaeger-sampler-ratio",
 				EnvVars:     []string{"LILY_JAEGER_SAMPLER_RATIO"},
 				Usage:       "If less than 1 probabilistic metrics will be used.",
 				Value:       1,
-				Destination: &commands.VisorTracingFlags.JaegerSamplerParam,
+				Destination: &commands.LilyTracingFlags.JaegerSamplerParam,
 			},
 			&cli.StringFlag{
 				Name:        "prometheus-port",
 				EnvVars:     []string{"LILY_PROMETHEUS_PORT"},
 				Value:       ":9991",
-				Destination: &commands.VisorMetricFlags.PrometheusPort,
+				Destination: &commands.LilyMetricFlags.PrometheusPort,
+			},
+			&cli.StringFlag{
+				Name:        "redis-addr",
+				EnvVars:     []string{"LILY_REDIS_ADDR"},
+				Usage:       `Redis server address in "host:port" format`,
+				Value:       "",
+				Destination: &commands.LilyMetricFlags.RedisAddr,
+			},
+
+			&cli.StringFlag{
+				Name:        "redis-username",
+				EnvVars:     []string{"LILY_REDIS_USERNAME"},
+				Usage:       `Username to authenticate the current connection when redis ACLs are used.`,
+				Value:       "",
+				Destination: &commands.LilyMetricFlags.RedisUsername,
+			},
+
+			&cli.StringFlag{
+				Name:        "redis-password",
+				EnvVars:     []string{"LILY_REDIS_PASSWORD"},
+				Usage:       `Password to authenticate the current connection`,
+				Value:       "",
+				Destination: &commands.LilyMetricFlags.RedisPassword,
+			},
+
+			&cli.IntFlag{
+				Name:        "redis-db",
+				EnvVars:     []string{"LILY_REDIS_DB"},
+				Usage:       `Redis DB to select after connection to server`,
+				Value:       0,
+				Destination: &commands.LilyMetricFlags.RedisDB,
 			},
 		},
-		HideHelp: true,
-		Metadata: commands.Metadata(),
 		Commands: []*cli.Command{
 			commands.ChainCmd,
 			commands.DaemonCmd,
 			commands.ExportChainCmd,
-			commands.GapCmd,
-			commands.HelpCmd,
 			commands.InitCmd,
-			commands.JobCmd,
 			commands.LogCmd,
 			commands.MigrateCmd,
 			commands.NetCmd,
-			commands.SurveyCmd,
+			commands.ShedCmd,
 			commands.StopCmd,
 			commands.SyncCmd,
-			commands.WaitApiCmd,
-			commands.WalkCmd,
-			commands.WatchCmd,
+			commands.WaitAPICmd,
+			job.JobCmd,
 		},
 	}
 	app.Setup()
@@ -148,7 +175,10 @@ func main() {
 	app.Metadata["traceContext"] = ctx
 
 	if err := app.RunContext(ctx, os.Args); err != nil {
-		fmt.Fprintln(os.Stdout, err.Error())
+		_, err := fmt.Fprintln(os.Stdout, err.Error())
+		if err != nil {
+			fmt.Printf("got error in main: %v", err)
+		}
 		os.Exit(1)
 	}
 }

@@ -3,11 +3,12 @@ package messages
 import (
 	"context"
 
-	"github.com/filecoin-project/lily/metrics"
-	"github.com/filecoin-project/lily/model"
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/filecoin-project/lily/metrics"
+	"github.com/filecoin-project/lily/model"
 )
 
 type BlockMessage struct {
@@ -16,18 +17,15 @@ type BlockMessage struct {
 	Message string `pg:",pk,notnull"`
 }
 
-func (bm *BlockMessage) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (bm *BlockMessage) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "block_messages"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, bm)
 }
 
 type BlockMessages []*BlockMessage
 
-func (bms BlockMessages) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (bms BlockMessages) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	if len(bms) == 0 {
 		return nil
 	}
@@ -38,9 +36,6 @@ func (bms BlockMessages) Persist(ctx context.Context, s model.StorageBatch, vers
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "block_messages"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, len(bms))
 	return s.PersistModel(ctx, bms)
 }

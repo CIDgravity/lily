@@ -3,20 +3,22 @@ package multisig
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 
-	adt2 "github.com/filecoin-project/specs-actors/v2/actors/util/adt"
+	"github.com/ipfs/go-cid"
+	cbg "github.com/whyrusleeping/cbor-gen"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
-	"github.com/ipfs/go-cid"
-	cbg "github.com/whyrusleeping/cbor-gen"
-	"golang.org/x/xerrors"
-
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
 	"github.com/filecoin-project/lily/chain/actors/adt"
-
-	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
 	msig2 "github.com/filecoin-project/specs-actors/v2/actors/builtin/multisig"
+	adt2 "github.com/filecoin-project/specs-actors/v2/actors/util/adt"
+
+	"github.com/filecoin-project/lotus/chain/actors"
 )
 
 var _ State = (*state2)(nil)
@@ -33,10 +35,6 @@ func load2(store adt.Store, root cid.Cid) (State, error) {
 type state2 struct {
 	msig2.State
 	store adt.Store
-}
-
-func (s *state2) Code() cid.Cid {
-	return builtin2.MultisigActorCodeID
 }
 
 func (s *state2) LockedBalance(currEpoch abi.ChainEpoch) (abi.TokenAmount, error) {
@@ -72,7 +70,7 @@ func (s *state2) ForEachPendingTxn(cb func(id int64, txn Transaction) error) err
 	return arr.ForEach(&out, func(key string) error {
 		txid, n := binary.Varint([]byte(key))
 		if n <= 0 {
-			return xerrors.Errorf("invalid pending transaction key: %v", key)
+			return fmt.Errorf("invalid pending transaction key: %v", key)
 		}
 		return cb(txid, (Transaction)(out)) //nolint:unconvert
 	})
@@ -87,8 +85,23 @@ func (s *state2) PendingTxnChanged(other State) (bool, error) {
 	return !s.State.PendingTxns.Equals(other2.PendingTxns), nil
 }
 
-func (s *state2) transactions() (adt.Map, error) {
+func (s *state2) PendingTransactionsMap() (adt.Map, error) {
 	return adt2.AsMap(s.store, s.PendingTxns)
+}
+
+func (s *state2) PendingTransactionsMapBitWidth() int {
+
+	return 5
+
+}
+
+func (s *state2) PendingTransactionsMapHashFunction() func(input []byte) []byte {
+
+	return func(input []byte) []byte {
+		res := sha256.Sum256(input)
+		return res[:]
+	}
+
 }
 
 func (s *state2) decodeTransaction(val *cbg.Deferred) (Transaction, error) {
@@ -96,5 +109,22 @@ func (s *state2) decodeTransaction(val *cbg.Deferred) (Transaction, error) {
 	if err := tx.UnmarshalCBOR(bytes.NewReader(val.Raw)); err != nil {
 		return Transaction{}, err
 	}
-	return tx, nil
+	return Transaction(tx), nil
+}
+
+func (s *state2) ActorKey() string {
+	return manifest.MultisigKey
+}
+
+func (s *state2) ActorVersion() actorstypes.Version {
+	return actorstypes.Version2
+}
+
+func (s *state2) Code() cid.Cid {
+	code, ok := actors.GetActorCodeID(s.ActorVersion(), s.ActorKey())
+	if !ok {
+		panic(fmt.Errorf("didn't find actor %v code id for actor version %d", s.ActorKey(), s.ActorVersion()))
+	}
+
+	return code
 }

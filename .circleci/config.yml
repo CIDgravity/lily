@@ -6,12 +6,12 @@ orbs:
 executors:
   dockerizer:
     docker:
-      - image: cimg/go:1.17.6
+      - image: cimg/go:1.22.7
     environment:
       IMAGE_NAME: filecoin/lily
   golang:
     docker:
-      - image: cimg/go:1.17.6
+      - image: cimg/go:1.22.7
 
 commands:
   install-deps:
@@ -35,40 +35,6 @@ commands:
       - run: git submodule sync
       - run: sudo apt-get install gcc libc-dev
       - run: git submodule update --init
-  trigger-deployment:
-    steps:
-      - checkout
-      - run:
-          name: Trigger deployment for filecoin-project/lily
-          command: |
-            # derive docker image deploy-tag according to the publish-* steps in this config
-            branch_tag_suffix=`echo "$CIRCLE_SHA1" | cut -c 1-8`
-            sanitized_branch=`echo $CIRCLE_BRANCH | sed 's:/:-:g'`
-            deploy_branch=${sanitized_branch}-${branch_tag_suffix}
-            sanitized_tag=`echo $CIRCLE_TAG | sed 's:/:-:g'`
-
-            # if $sanitized_tag is empty, default to $sanitized_branch
-            deploy_target=${sanitized_tag:-$deploy_branch}
-
-            # curlf fails with a non-zero exit code when the status code is not 2XX
-            curlf() {
-              OUTPUT_FILE=$(mktemp)
-              HTTP_CODE=$(curl --silent --output $OUTPUT_FILE --write-out "%{http_code}" "$@")
-              if [[ ${HTTP_CODE} -lt 200 || ${HTTP_CODE} -gt 299 ]] ; then
-                >&2 cat $OUTPUT_FILE
-                return 22
-              fi
-              cat $OUTPUT_FILE
-              rm $OUTPUT_FILE
-            }
-
-            # trigger deployment in sentinel-infra repo
-            curlf --request POST \
-              --url https://circleci.com/api/v2/project/gh/filecoin-project/sentinel-infra/pipeline \
-              --header "Circle-Token: $SENTINEL_INFRA_CIRCLECI_API_TOKEN" \
-              --header "content-type: application/json" \
-              --data "{\"branch\":\"master\",\"parameters\":{\"trigger-deploy\": true, \"deploy-tag\":\"$deploy_target\"}}"
-            echo ""
   validate-docker-executeable:
     steps:
       - run:
@@ -82,49 +48,52 @@ jobs:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Publish Mainnet Production Docker Image from Lily branch to Docker Hub
           command: |
             echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
             sanitized_branch=`echo $CIRCLE_BRANCH | sed 's:/:-:g'`
             tag_suffix=$(echo "$CIRCLE_SHA1" | cut -c 1-8)
-            make docker-mainnet-push LILY_IMAGE_TAG=${sanitized_branch}-${tag_suffix}
+            tag_date=$(date +%Y%m%d%H%M)
+            make docker-mainnet-push LILY_IMAGE_TAG=${sanitized_branch}-${tag_date}-${tag_suffix}
   publish-production-image-from-branch-for-calibnet:
     executor: dockerizer
     steps:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Publish Calibnet Production Docker Image from Lily branch to Docker Hub
           command: |
             echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
             sanitized_branch=`echo $CIRCLE_BRANCH | sed 's:/:-:g'`
             tag_suffix=$(echo "$CIRCLE_SHA1" | cut -c 1-8)
-            make docker-calibnet-push LILY_IMAGE_TAG=${sanitized_branch}-${tag_suffix}-calibnet
+            tag_date=$(date +%Y%m%d%H%M)
+            make docker-calibnet-push LILY_IMAGE_TAG=${sanitized_branch}-${tag_date}-${tag_suffix}-calibnet
   publish-production-image-from-branch-for-butterflynet:
     executor: dockerizer
     steps:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Publish Butterflynet Production Docker Image from Lily branch to Docker Hub
           command: |
             echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
             sanitized_branch=`echo $CIRCLE_BRANCH | sed 's:/:-:g'`
             tag_suffix=$(echo "$CIRCLE_SHA1" | cut -c 1-8)
-            LILY_IMAGE_TAG=${sanitized_branch}-${tag_suffix}-butterflynet make docker-butterflynet-push
+            tag_date=$(date +%Y%m%d%H%M)
+            make docker-butterflynet-push LILY_IMAGE_TAG=${sanitized_branch}-${tag_date}-${tag_suffix}-butterflynet
   publish-production-image-from-semver-tag-for-mainnet:
     executor: dockerizer
     steps:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Publish Mainnet Production Docker Image from Lily semver tag to Docker Hub
           command: |
@@ -142,7 +111,7 @@ jobs:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Publish Calibnet Production Docker Image from Lily semver tag to Docker Hub
           command: |
@@ -159,7 +128,7 @@ jobs:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Publish Butterflynet Production Docker Image from Lily semver tag to Docker Hub
           command: |
@@ -170,16 +139,6 @@ jobs:
             if [[ "$CIRCLE_TAG" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
               LILY_IMAGE_TAG=butterflynet-latest make docker-butterflynet-push
             fi
-  # duplicated jobs are for making these jobs' descriptions
-  # in the pipelines within the CircleCI less confusing
-  trigger-branch-deployment-for-all-networks:
-    executor: dockerizer
-    steps:
-      - trigger-deployment
-  trigger-semver-tag-deployment-for-all-networks:
-    executor: dockerizer
-    steps:
-      - trigger-deployment
   mod-tidy-check:
     executor: golang
     steps:
@@ -187,9 +146,9 @@ jobs:
       - prepare
       - go/mod-tidy-check
   test:
-    resource_class: large
+    resource_class: xlarge
     docker:
-      - image: cimg/go:1.17.6
+      - image: cimg/go:1.22.7
       - image: timescale/timescaledb:2.5.0-pg13
         environment:
           POSTGRES_PASSWORD: password
@@ -224,7 +183,7 @@ jobs:
   integration-test:
     resource_class: large
     docker:
-      - image: cimg/go:1.17.6
+      - image: cimg/go:1.22.7
       - image: timescale/timescaledb:2.5.0-pg13
         environment:
           POSTGRES_PASSWORD: password
@@ -259,6 +218,7 @@ jobs:
           key: lily-test-vectors-{{ checksum "./build/test-vectors/vectors.json" }}
           paths:
             - /var/tmp/lily-test-vectors/
+
   lint: &lint
     description: |
       Run golangci-lint.
@@ -266,9 +226,6 @@ jobs:
       executor:
         type: executor
         default: golang
-      golangci-lint-version:
-        type: string
-        default: 1.28.2
       concurrency:
         type: string
         default: '2'
@@ -284,35 +241,24 @@ jobs:
     steps:
       - install-deps
       - prepare
-      - run: make deps
+      - run: make build
       - run:
-          name: Install staticcheck
-          command: go install honnef.co/go/tools/cmd/staticcheck@434f5f3816b358fe468fa83dcba62d794e7fe04b # 2021.1 (v0.2.0)
+          command: make -j3 support/tools/bin/golangci-lint
       - run:
-          name: gofmt
+          name: Lint
           command: |
-            out=$(gofmt -l . | { grep -v extern || true; })
-            if [[ -n "$out" ]]; then
-              echo $out | awk '{print "::error file=" $0 ",line=0,col=0::File is not gofmt-ed."}'
-              exit 1
-            fi
-      - run:
-          name: go vet
-          command: go vet $(go list ./... | grep -v /tasks/messages/types)
-      - run:
-          name: staticcheck
-          command: |
-            set -o pipefail
-            staticcheck ./... | sed -e 's@\(.*\)\.go@./\1.go@g'
+            golangci-lint run -v --timeout 5m \
+              --concurrency << parameters.concurrency >> << parameters.args >>
   lint-all:
     <<: *lint
+
   test-docker-mainnet:
     executor: dockerizer
     steps:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Build Production Mainnet Docker image
           command: make docker-mainnet
@@ -323,7 +269,7 @@ jobs:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Build Dev Mainnet Docker image
           command: make docker-mainnet-dev
@@ -334,7 +280,7 @@ jobs:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
           name: Build Production Calibnet Docker image
           command: make docker-calibnet
@@ -345,9 +291,9 @@ jobs:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
-          version: "20.10.6"
+          version: default
       - run:
-          name: Build Dev Calibnet Docker image
+          name: Build Dev Calinet Docker image
           command: make docker-calibnet-dev
       - validate-docker-executeable
 
@@ -356,7 +302,7 @@ jobs:
 # used in `build-docker-images` workflow below
 branch_filters: &branch_filters
   branches:
-    only: /.*deploy.*/
+    only: master
   tags:
     ignore: /.*/
 
@@ -374,31 +320,25 @@ workflows:
     # `test` and `mod-tidy-check` runs for all branches
     jobs:
       - mod-tidy-check
-      - lint-all
+      - lint-all:
+          concurrency: "8"
       - test
-      - integration-test
       - test-docker-mainnet
       - test-docker-mainnet-dev
       - test-docker-calibnet
       - test-docker-calibnet-dev
   build-docker-images:
     jobs:
+      # only publish staging images for mainnet and calibnet
       - publish-production-image-from-branch-for-mainnet:
           filters:
             <<: *branch_filters
       - publish-production-image-from-branch-for-calibnet:
           filters:
             <<: *branch_filters
-      - publish-production-image-from-branch-for-butterflynet:
-          filters:
-            <<: *branch_filters
-      - trigger-branch-deployment-for-all-networks:
-          requires:
-            - publish-production-image-from-branch-for-mainnet
-            - publish-production-image-from-branch-for-calibnet
-            - publish-production-image-from-branch-for-butterflynet
-          filters:
-            <<: *branch_filters
+      #- publish-production-image-from-branch-for-butterflynet:
+          #filters:
+            #<<: *branch_filters
       - publish-production-image-from-semver-tag-for-mainnet:
           filters:
             <<: *tag_filters
@@ -406,13 +346,6 @@ workflows:
           filters:
             <<: *tag_filters
       - publish-production-image-from-semver-tag-for-butterflynet:
-          filters:
-            <<: *tag_filters
-      - trigger-semver-tag-deployment-for-all-networks:
-          requires:
-            - publish-production-image-from-semver-tag-for-mainnet
-            - publish-production-image-from-semver-tag-for-calibnet
-            - publish-production-image-from-semver-tag-for-butterflynet
           filters:
             <<: *tag_filters
 

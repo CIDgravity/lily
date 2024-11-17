@@ -2,15 +2,20 @@
 package reward
 
 import (
-	"github.com/filecoin-project/go-state-types/abi"
+	"fmt"
+
 	"github.com/ipfs/go-cid"
 
+	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
 	"github.com/filecoin-project/lily/chain/actors/adt"
 	"github.com/filecoin-project/lily/chain/actors/builtin"
-
 	miner0 "github.com/filecoin-project/specs-actors/actors/builtin/miner"
 	reward0 "github.com/filecoin-project/specs-actors/actors/builtin/reward"
 	smoothing0 "github.com/filecoin-project/specs-actors/actors/util/smoothing"
+
+	"github.com/filecoin-project/lotus/chain/actors"
 )
 
 var _ State = (*state0)(nil)
@@ -35,7 +40,7 @@ func (s *state0) ThisEpochReward() (abi.TokenAmount, error) {
 
 func (s *state0) ThisEpochRewardSmoothed() (builtin.FilterEstimate, error) {
 
-	return builtin.FromV0FilterEstimate(*s.State.ThisEpochRewardSmoothed), nil
+	return builtin.FilterEstimate(*s.State.ThisEpochRewardSmoothed), nil
 
 }
 
@@ -63,7 +68,7 @@ func (s *state0) CumsumRealized() (reward0.Spacetime, error) {
 	return s.State.CumsumRealized, nil
 }
 
-func (s *state0) InitialPledgeForPower(sectorWeight abi.StoragePower, networkTotalPledge abi.TokenAmount, networkQAPower *builtin.FilterEstimate, circSupply abi.TokenAmount) (abi.TokenAmount, error) {
+func (s *state0) InitialPledgeForPower(sectorWeight abi.StoragePower, networkTotalPledge abi.TokenAmount, networkQAPower *builtin.FilterEstimate, circSupply abi.TokenAmount, _ int64, _ uint64) (abi.TokenAmount, error) {
 	return miner0.InitialPledgeForPower(
 		sectorWeight,
 		s.State.ThisEpochBaselinePower,
@@ -83,4 +88,21 @@ func (s *state0) PreCommitDepositForPower(networkQAPower builtin.FilterEstimate,
 			VelocityEstimate: networkQAPower.VelocityEstimate,
 		},
 		sectorWeight), nil
+}
+
+func (s *state0) ActorKey() string {
+	return manifest.RewardKey
+}
+
+func (s *state0) ActorVersion() actorstypes.Version {
+	return actorstypes.Version0
+}
+
+func (s *state0) Code() cid.Cid {
+	code, ok := actors.GetActorCodeID(s.ActorVersion(), s.ActorKey())
+	if !ok {
+		panic(fmt.Errorf("didn't find actor %v code id for actor version %d", s.ActorKey(), s.ActorVersion()))
+	}
+
+	return code
 }

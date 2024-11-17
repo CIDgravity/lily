@@ -1,6 +1,6 @@
 SHELL=/usr/bin/env bash
 
-GO_BUILD_IMAGE?=golang:1.17.6
+GO_BUILD_IMAGE?=golang:1.22.7
 PG_IMAGE?=postgres:10
 REDIS_IMAGE?=redis:6
 LILY_IMAGE_NAME?=filecoin/lily
@@ -51,8 +51,6 @@ build/.update-modules:
 
 CLEAN+=build/.update-modules
 
-# tools
-toolspath:=support/tools
 
 ldflags=-X=github.com/filecoin-project/lily/version.GitVersion=$(LILY_VERSION)
 ifneq ($(strip $(LDFLAGS)),)
@@ -83,14 +81,14 @@ dockerdown:
 testfull: build
 	docker-compose up -d
 	sleep 2
-	./lily migrate --latest
-	-TZ= PGSSLMODE=disable go test ./... -v
+	LILY_DB="postgres://postgres:password@localhost:5432/postgres?sslmode=disable" ./lily migrate --latest
+	-TZ= PGSSLMODE=disable  LILY_TEST_DB="postgres://postgres:password@localhost:5432/postgres?sslmode=disable" go test ./...
 	docker-compose down
 
 # testshort runs tests that don't require external dependencies such as postgres or redis
 .PHONY: testshort
 testshort:
-	go test -short ./... -v
+	go test -short ./... 
 
 
 .PHONY: lily
@@ -98,6 +96,15 @@ lily:
 	rm -f lily
 	go build $(GOFLAGS) -o lily -mod=readonly .
 BINS+=lily
+
+ifeq ($(shell uname -s), Darwin)
+export CGO_ENABLED=1
+    ifeq ($(shell uname -m), arm64)
+export GOARCH=arm64
+export LIBRARY_PATH=/opt/homebrew/lib
+export FFI_BUILD_FROM_SOURCE=1
+    endif
+endif
 
 .PHONY: clean
 clean:
@@ -113,6 +120,7 @@ test-coverage:
 	LILY_TEST_DB="postgres://postgres:password@localhost:5432/postgres?sslmode=disable" go test -coverprofile=coverage.out ./...
 
 # tools
+toolspath:=support/tools
 
 $(toolspath)/bin/golangci-lint: $(toolspath)/go.mod
 	@mkdir -p $(dir $@)
@@ -120,11 +128,20 @@ $(toolspath)/bin/golangci-lint: $(toolspath)/go.mod
 
 .PHONY: lint
 lint: $(toolspath)/bin/golangci-lint
-	$(toolspath)/bin/golangci-lint run ./...
+	$(toolspath)/bin/golangci-lint run --concurrency 8 ./...
 
-.PHONY: actors-gen
-actors-gen:
+actors-code-gen:
+	go run ./gen/inline-gen . gen/inlinegen-data.json
 	go run ./chain/actors/agen
+	go fmt ./...
+
+actors-gen: actors-code-gen 
+	./scripts/fiximports
+.PHONY: actors-gen
+
+.PHONY: tasks-gen
+tasks-gen:
+	go run ./chain/indexer/tasktype/tablegen
 	go fmt ./...
 
 .PHONY: itest

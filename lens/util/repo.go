@@ -3,249 +3,170 @@ package util
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 
-	"github.com/filecoin-project/go-bitfield"
 	"github.com/ipfs/go-cid"
 	logging "github.com/ipfs/go-log/v2"
 	cbg "github.com/whyrusleeping/cbor-gen"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-address"
+	"github.com/filecoin-project/go-bitfield"
 	"github.com/filecoin-project/go-state-types/abi"
-	builtin "github.com/filecoin-project/lotus/chain/actors/builtin"
-	"github.com/filecoin-project/lotus/chain/consensus/filcns"
-	"github.com/filecoin-project/lotus/chain/state"
-	"github.com/filecoin-project/lotus/chain/stmgr"
-	"github.com/filecoin-project/lotus/chain/store"
-	"github.com/filecoin-project/lotus/chain/types"
-	"github.com/filecoin-project/lotus/chain/vm"
+	"github.com/filecoin-project/lily/lens"
+	"github.com/filecoin-project/lily/tasks/actorstate/market"
 	"github.com/filecoin-project/specs-actors/actors/util/adt"
 
-	builtininit "github.com/filecoin-project/lily/chain/actors/builtin/init"
-	"github.com/filecoin-project/lily/lens"
+	builtin "github.com/filecoin-project/lotus/chain/actors/builtin"
+	"github.com/filecoin-project/lotus/chain/consensus"
+	"github.com/filecoin-project/lotus/chain/state"
+	"github.com/filecoin-project/lotus/chain/types"
+	"github.com/filecoin-project/lotus/chain/vm"
 )
 
 var ActorRegistry *vm.ActorRegistry
 
 func init() {
-	ActorRegistry = filcns.NewActorRegistry()
+	ActorRegistry = consensus.NewActorRegistry()
 }
 
 var log = logging.Logger("lily/lens")
 
-// GetMessagesForTipset returns a list of messages sent as part of pts (parent) with receipts found in ts (child).
-// No attempt at deduplication of messages is made. A list of blocks with their corresponding messages is also returned - it contains all messages
-// in the block regardless if they were applied during the state change.
-func GetExecutedAndBlockMessagesForTipset(ctx context.Context, cs *store.ChainStore, sm *stmgr.StateManager, next, current *types.TipSet) (*lens.TipSetMessages, error) {
-	ctx, span := otel.Tracer("").Start(ctx, "GetExecutedAndBlockMessagesForTipSet")
-	defer span.End()
-	if !types.CidArrsEqual(next.Parents().Cids(), current.Cids()) {
-		return nil, xerrors.Errorf("child tipset (%s) is not on the same chain as parent (%s)", next.Key(), current.Key())
-	}
-
-	getActorCode, err := MakeGetActorCodeFunc(ctx, cs.ActorStore(ctx), next, current)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build a lookup of which blocks each message appears in
-	messageBlocks := map[cid.Cid][]cid.Cid{}
-	for blockIdx, bh := range current.Blocks() {
-		blscids, secpkcids, err := cs.ReadMsgMetaCids(bh.Messages)
-		if err != nil {
-			return nil, xerrors.Errorf("read messages for block: %w", err)
-		}
-
-		for _, c := range blscids {
-			messageBlocks[c] = append(messageBlocks[c], current.Cids()[blockIdx])
-		}
-
-		for _, c := range secpkcids {
-			messageBlocks[c] = append(messageBlocks[c], current.Cids()[blockIdx])
-		}
-	}
-	span.AddEvent("read block message metadata")
-
-	bmsgs, err := cs.BlockMsgsForTipset(current)
-	if err != nil {
-		return nil, xerrors.Errorf("block messages for tipset: %w", err)
-	}
-
-	span.AddEvent("read block messages for tipset")
-
-	pblocks := current.Blocks()
-	if len(bmsgs) != len(pblocks) {
-		// logic error somewhere
-		return nil, xerrors.Errorf("mismatching number of blocks returned from block messages, got %d wanted %d", len(bmsgs), len(pblocks))
-	}
-
-	count := 0
-	for _, bm := range bmsgs {
-		count += len(bm.BlsMessages) + len(bm.SecpkMessages)
-	}
-
-	// Start building a list of completed message with receipt
-	emsgs := make([]*lens.ExecutedMessage, 0, count)
-
-	// bmsgs is ordered by block
-	var index uint64
-	for blockIdx, bm := range bmsgs {
-		for _, blsm := range bm.BlsMessages {
-			msg := blsm.VMMessage()
-			// if a message ran out of gas while executing this is expected.
-			toCode, found := getActorCode(msg.To)
-			if !found {
-				log.Warnw("failed to find TO actor", "height", next.Height().String(), "message", msg.Cid().String(), "actor", msg.To.String())
-			}
-			// we must always be able to find the sender, else there is a logic error somewhere.
-			fromCode, found := getActorCode(msg.From)
-			if !found {
-				return nil, xerrors.Errorf("failed to find from actor %s height %d message %s", msg.From, next.Height(), msg.Cid())
-			}
-			emsgs = append(emsgs, &lens.ExecutedMessage{
-				Cid:           blsm.Cid(),
-				Height:        current.Height(),
-				Message:       msg,
-				BlockHeader:   pblocks[blockIdx],
-				Blocks:        messageBlocks[blsm.Cid()],
-				Index:         index,
-				FromActorCode: fromCode,
-				ToActorCode:   toCode,
-			})
-			index++
-		}
-
-		for _, secm := range bm.SecpkMessages {
-			msg := secm.VMMessage()
-			toCode, found := getActorCode(msg.To)
-			// if a message ran out of gas while executing this is expected.
-			if !found {
-				log.Warnw("failed to find TO actor", "height", next.Height().String(), "message", msg.Cid().String(), "actor", msg.To.String())
-			}
-			// we must always be able to find the sender, else there is a logic error somewhere.
-			fromCode, found := getActorCode(msg.From)
-			if !found {
-				return nil, xerrors.Errorf("failed to find from actor %s height %d message %s", msg.From, next.Height(), msg.Cid())
-			}
-			emsgs = append(emsgs, &lens.ExecutedMessage{
-				Cid:           secm.Cid(),
-				Height:        current.Height(),
-				Message:       secm.VMMessage(),
-				BlockHeader:   pblocks[blockIdx],
-				Blocks:        messageBlocks[secm.Cid()],
-				Index:         index,
-				FromActorCode: fromCode,
-				ToActorCode:   toCode,
-			})
-			index++
-		}
-
-	}
-	span.AddEvent("built executed message list")
-
-	// Retrieve receipts using a block from the child tipset
-	rs, err := adt.AsArray(cs.ActorStore(ctx), next.Blocks()[0].ParentMessageReceipts)
-	if err != nil {
-		return nil, xerrors.Errorf("amt load: %w", err)
-	}
-
-	if rs.Length() != uint64(len(emsgs)) {
-		// logic error somewhere
-		return nil, xerrors.Errorf("mismatching number of receipts: got %d wanted %d", rs.Length(), len(emsgs))
-	}
-
-	// Create a skeleton vm just for calling ShouldBurn
-	vmi, err := vm.NewVM(ctx, &vm.VMOpts{
-		StateBase:      current.ParentState(),
-		Epoch:          current.Height(),
-		Bstore:         cs.StateBlockstore(),
-		NtwkVersion:    DefaultNetwork.Version,
-		Actors:         filcns.NewActorRegistry(),
-		Syscalls:       sm.Syscalls,
-		CircSupplyCalc: sm.GetVMCirculatingSupply,
-	})
-	if err != nil {
-		return nil, xerrors.Errorf("creating temporary vm: %w", err)
-	}
-
-	parentStateTree, err := state.LoadStateTree(cs.ActorStore(ctx), current.ParentState())
-	if err != nil {
-		return nil, xerrors.Errorf("load state tree: %w", err)
-	}
-	span.AddEvent("loaded parent state tree")
-
-	// Receipts are in same order as BlockMsgsForTipset
-	for _, em := range emsgs {
-		var r types.MessageReceipt
-		if found, err := rs.Get(em.Index, &r); err != nil {
-			return nil, err
-		} else if !found {
-			return nil, xerrors.Errorf("failed to find receipt %d", em.Index)
-		}
-		em.Receipt = &r
-
-		burn, err := vmi.ShouldBurn(ctx, parentStateTree, em.Message, em.Receipt.ExitCode)
-		if err != nil {
-			return nil, xerrors.Errorf("deciding whether should burn failed: %w", err)
-		}
-
-		em.GasOutputs = vm.ComputeGasOutputs(em.Receipt.GasUsed, em.Message.GasLimit, em.BlockHeader.ParentBaseFee, em.Message.GasFeeCap, em.Message.GasPremium, burn)
-
-	}
-	span.AddEvent("computed executed message gas usage")
-
-	blkMsgs := make([]*lens.BlockMessages, len(next.Blocks()))
-	for idx, blk := range next.Blocks() {
-		msgs, smsgs, err := cs.MessagesForBlock(blk)
-		if err != nil {
-			return nil, err
-		}
-		blkMsgs[idx] = &lens.BlockMessages{
-			Block:        blk,
-			BlsMessages:  msgs,
-			SecpMessages: smsgs,
-		}
-	}
-
-	span.AddEvent("read messages for next block")
-
-	return &lens.TipSetMessages{
-		Executed: emsgs,
-		Block:    blkMsgs,
-	}, nil
+type CBORByteArray struct {
+	Params string
 }
 
-func ParseParams(params []byte, method abi.MethodNum, actCode cid.Cid) (string, string, error) {
+func ParseVmMessageParams(params []byte, paramsCodec uint64, method abi.MethodNum, actCode cid.Cid) (string, string, error) {
 	m, found := ActorRegistry.Methods[actCode][method]
 	if !found {
-		return "", "", fmt.Errorf("unknown method %d for actor %s", method, actCode)
+		// if the method wasn't found it is likely the case the method was one of:
+		// https://github.com/filecoin-project/builtin-actors/blob/f5311fe735df4d9baf5f82d4b3db10f3c51688c4/actors/docs/README.md?plain=1#L31
+		// so we just marshal the raw value to json and bail with a warning
+		paramj, err := json.Marshal(params)
+		if err != nil {
+			return "", "", err
+		}
+		return string(paramj), builtin.ActorNameByCode(actCode), nil
+	}
+	// If the codec is 0, the parameters/return value are "empty".
+	// If the codec is 0x55, it's bytes.
+	if paramsCodec == 0 || paramsCodec == 0x55 {
+		paramj, err := json.Marshal(CBORByteArray{Params: market.SanitizeLabel(string(params))})
+		if err != nil {
+			return "", "", err
+		}
+		return string(paramj), m.Name, nil
+	}
+	return ParseParams(params, method, actCode)
+}
+
+func ParseVmMessageReturn(ret []byte, retCodec uint64, method abi.MethodNum, actCode cid.Cid) (string, string, error) {
+	m, found := ActorRegistry.Methods[actCode][method]
+	if !found {
+		// if the method wasn't found it is likely the case the method was one of:
+		// https://github.com/filecoin-project/builtin-actors/blob/f5311fe735df4d9baf5f82d4b3db10f3c51688c4/actors/docs/README.md?plain=1#L31
+		// so we just marshal the raw value to json and bail with a warning
+		retJ, err := json.Marshal(ret)
+		if err != nil {
+			return "", "", err
+		}
+		return string(retJ), builtin.ActorNameByCode(actCode), nil
+	}
+	// If the codec is 0, the parameters/return value are "empty".
+	// If the codec is 0x55, it's bytes.
+	if retCodec == 0 || retCodec == 0x55 {
+		retj, err := json.Marshal(CBORByteArray{Params: market.SanitizeLabel(string(ret))})
+		if err != nil {
+			return "", "", err
+		}
+		return string(retj), m.Name, nil
+	}
+	return ParseReturn(ret, method, actCode)
+}
+
+func ParseParams(params []byte, method abi.MethodNum, actCode cid.Cid) (_ string, _ string, err error) {
+	m, found := ActorRegistry.Methods[actCode][method]
+	if !found {
+		// if the method wasn't found it is likely the case the method was one of:
+		// https://github.com/filecoin-project/builtin-actors/blob/f5311fe735df4d9baf5f82d4b3db10f3c51688c4/actors/docs/README.md?plain=1#L31
+		// so we just marshal the raw value to json and bail with a warning
+		paramj, err := json.Marshal(params)
+		if err != nil {
+			return "", "", err
+		}
+		return string(paramj), method.String(), nil
 	}
 
 	// if the actor method doesn't expect params don't parse them
 	// messages can contain unexpected params and remain valid, we need to ignore this case for parsing.
-	if m.Params == reflect.TypeOf(new(abi.EmptyValue)) {
+	if m.Params == reflect.TypeOf(new(abi.EmptyValue)) ||
+		len(params) == 0 {
 		return "", m.Name, nil
 	}
 
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("method %s ActorName %s ParseParams recovered from panic: %+v", m.Name, builtin.ActorNameByCode(actCode), r)
+		}
+	}()
+
+	// this statement can panic if the message params do not implement CBORUnmarshaler, so we recover above.
+	// see https://github.com/filecoin-project/go-state-types/pull/119 for context
 	p := reflect.New(m.Params.Elem()).Interface().(cbg.CBORUnmarshaler)
 	if err := p.UnmarshalCBOR(bytes.NewReader(params)); err != nil {
 		actorName := builtin.ActorNameByCode(actCode)
-		return "", m.Name, fmt.Errorf("cbor decode into %s %s:(%s.%d) failed: %v", m.Name, actorName, actCode, method, err)
+		return "", m.Name, fmt.Errorf("parse message params cbor decode into %s %s:(%s.%d) return (hex): %s failed: %w", m.Name, actorName, actCode, method, hex.EncodeToString(params), err)
 	}
 
 	b, err := MarshalWithOverrides(p, map[reflect.Type]marshaller{
 		reflect.TypeOf(bitfield.BitField{}): bitfieldCountMarshaller,
 	})
 	if err != nil {
-		return "", "", xerrors.Errorf("failed to parse message params method: %d, actor code: %s, params: %s: %w", method, actCode, string(params), err)
+		return "", "", fmt.Errorf("parse message params method: %d actor code: %s params: %s failed: %w", method, actCode, hex.EncodeToString(params), err)
 	}
 
 	return string(b), m.Name, err
+}
+
+func ParseReturn(ret []byte, method abi.MethodNum, actCode cid.Cid) (_ string, _ string, err error) {
+	m, found := ActorRegistry.Methods[actCode][method]
+	if !found {
+		return "", "", fmt.Errorf("unknown method %d for actor %s", method, actCode)
+	}
+
+	// if the actor method doesn't expect returns don't parse them
+	if m.Ret == reflect.TypeOf(new(abi.EmptyValue)) ||
+		len(ret) == 0 {
+		return "", m.Name, nil
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("ParseReturn recovered from panic: %+v", r)
+		}
+	}()
+
+	// this statement can panic if the message params do not implement CBORUnmarshaler, so we recover above.
+	// see https://github.com/filecoin-project/go-state-types/pull/119 for context
+	p := reflect.New(m.Ret.Elem()).Interface().(cbg.CBORUnmarshaler)
+	if err := p.UnmarshalCBOR(bytes.NewReader(ret)); err != nil {
+		actorName := builtin.ActorNameByCode(actCode)
+		return "", m.Name, fmt.Errorf("parse message return cbor decode into %s %s:(%s.%d) return (hex): %s failed: %w", m.Name, actorName, actCode, method, hex.EncodeToString(ret), err)
+	}
+
+	b, err := MarshalWithOverrides(p, map[reflect.Type]marshaller{
+		reflect.TypeOf(bitfield.BitField{}): bitfieldCountMarshaller,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("parse message return method: %d actor code: %s return (hex): %s failed: %w", method, actCode, hex.EncodeToString(ret), err)
+	}
+
+	return string(b), m.Name, err
+
 }
 
 func MethodAndParamsForMessage(m *types.Message, destCode cid.Cid) (string, string, error) {
@@ -255,15 +176,15 @@ func MethodAndParamsForMessage(m *types.Message, destCode cid.Cid) (string, stri
 	}
 
 	if !destCode.Defined() {
-		return "Unknown", "", xerrors.Errorf("missing actor code")
+		return "Unknown", "", fmt.Errorf("missing actor code")
 	}
 
 	params, method, err := ParseParams(m.Params, m.Method, destCode)
 	if method == "Unknown" {
-		return "", "", xerrors.Errorf("unknown method for actor type %s: %d", destCode.String(), int64(m.Method))
+		return "", "", fmt.Errorf("unknown method for actor type %s: %d", destCode.String(), int64(m.Method))
 	}
 	if err != nil {
-		log.Warnf("failed to parse parameters of message %s: %v", m.Cid, err)
+		log.Warnf("failed to parse parameters of message %s: %v", m.Cid().String(), err)
 		// this can occur when the message is not valid cbor
 		return method, "", err
 	}
@@ -274,17 +195,50 @@ func MethodAndParamsForMessage(m *types.Message, destCode cid.Cid) (string, stri
 	return method, params, nil
 }
 
+type MessageParamsReturn struct {
+	MethodName string
+	Params     string
+	Return     string
+}
+
+type MessageTrace struct {
+	Message   types.MessageTrace
+	Receipt   types.ReturnTrace
+	GasCharge []*types.GasTrace
+	Index     uint64
+}
+
+func GetChildMessagesOf(m *lens.MessageExecution) []*MessageTrace {
+	var out []*MessageTrace
+	index := uint64(0)
+	walkExecutionTrace(&m.Ret.ExecutionTrace, &out, &index)
+	return out
+}
+
+func walkExecutionTrace(et *types.ExecutionTrace, trace *[]*MessageTrace, index *uint64) {
+	for _, sub := range et.Subcalls {
+		*trace = append(*trace, &MessageTrace{
+			Message:   sub.Msg,
+			Receipt:   sub.MsgRct,
+			GasCharge: sub.GasCharges,
+			Index:     *index,
+		})
+		*index++
+		walkExecutionTrace(&sub, trace, index) //nolint:scopelint,gosec
+	}
+}
+
 func ActorNameAndFamilyFromCode(c cid.Cid) (name string, family string, err error) {
 	if !c.Defined() {
-		return "", "", xerrors.Errorf("cannot derive actor name from undefined CID")
+		return "", "", fmt.Errorf("cannot derive actor name from undefined CID")
 	}
 	name = builtin.ActorNameByCode(c)
 	if name == "<unknown>" {
-		return "", "", xerrors.Errorf("cannot derive actor name from unknown CID: %s (maybe we need up update deps?)", c.String())
+		return "", "", fmt.Errorf("cannot derive actor name from unknown CID: %s (maybe we need up update deps?)", c.String())
 	}
 	tokens := strings.Split(name, "/")
 	if len(tokens) != 3 {
-		return "", "", xerrors.Errorf("cannot parse actor name: %s from tokens: %s", name, tokens)
+		return "", "", fmt.Errorf("cannot parse actor name: %s from tokens: %s", name, tokens)
 	}
 	// network = tokens[0]
 	// version = tokens[1]
@@ -292,63 +246,38 @@ func ActorNameAndFamilyFromCode(c cid.Cid) (name string, family string, err erro
 	return
 }
 
-func MakeGetActorCodeFunc(ctx context.Context, store adt.Store, next, current *types.TipSet) (func(a address.Address) (cid.Cid, bool), error) {
-	nextStateTree, err := state.LoadStateTree(store, next.ParentState())
+func MakeGetActorCodeFunc(ctx context.Context, store adt.Store, child, parent *types.TipSet) (func(ctx context.Context, a address.Address) (cid.Cid, bool), error) {
+	_, span := otel.Tracer("").Start(ctx, "MakeGetActorCodeFunc")
+	defer span.End()
+
+	childStateTree, err := state.LoadStateTree(store, child.ParentState())
 	if err != nil {
-		return nil, xerrors.Errorf("load state tree: %w", err)
+		return nil, fmt.Errorf("loading child state: %w", err)
 	}
 
-	// Build a lookup of actor codes that exist after all messages in the current epoch have been executed
-	actorCodes := map[address.Address]cid.Cid{}
-	if err := nextStateTree.ForEach(func(a address.Address, act *types.Actor) error {
-		actorCodes[a] = act.Code
-		return nil
-	}); err != nil {
-		return nil, xerrors.Errorf("iterate actors: %w", err)
-	}
-
-	nextInitActor, err := nextStateTree.GetActor(builtininit.Address)
+	parentStateTree, err := state.LoadStateTree(store, parent.ParentState())
 	if err != nil {
-		return nil, xerrors.Errorf("getting init actor: %w", err)
+		return nil, fmt.Errorf("loading parent state: %w", err)
 	}
 
-	nextInitActorState, err := builtininit.Load(store, nextInitActor)
-	if err != nil {
-		return nil, xerrors.Errorf("loading init actor state: %w", err)
-	}
+	return func(ctx context.Context, a address.Address) (cid.Cid, bool) {
+		_, innerSpan := otel.Tracer("").Start(ctx, "GetActorCode")
+		defer innerSpan.End()
 
-	return func(a address.Address) (cid.Cid, bool) {
-		// Shortcut lookup before resolving
-		c, ok := actorCodes[a]
-		if ok {
-			return c, true
+		act, err := childStateTree.GetActor(a)
+		if err == nil {
+			return act.Code, true
 		}
 
-		ra, found, err := nextInitActorState.ResolveAddress(a)
-		if err != nil || !found {
-			log.Warnw("failed to resolve actor address", "address", a.String())
-			return cid.Undef, false
+		// look in parent state, the address may have been deleted in the transition from parent -> child state.
+		log.Infof("failed to find actor %s in child init actor state (err: %s), falling back to parent", a, err)
+		act, err = parentStateTree.GetActor(a)
+		if err == nil {
+			return act.Code, true
 		}
 
-		c, ok = actorCodes[ra]
-		if ok {
-			return c, true
-		}
-
-		// Fall back to looking in current state tree. This actor may have been deleted.
-		currentStateTree, err := state.LoadStateTree(store, current.ParentState())
-		if err != nil {
-			log.Warnf("failed to load state tree: %v", err)
-			return cid.Undef, false
-		}
-
-		act, err := currentStateTree.GetActor(a)
-		if err != nil {
-			log.Warnw("failed to find actor in state tree", "address", a.String(), "error", err.Error())
-			return cid.Undef, false
-		}
-
-		return act.Code, true
+		log.Infof("failed to find actor %s in parent state: %s", a, err)
+		return cid.Undef, false
 	}, nil
 }
 
@@ -358,7 +287,7 @@ func MarshalWithOverrides(v interface{}, overrides map[reflect.Type]marshaller) 
 	defer func() {
 		if r := recover(); r != nil {
 			out = nil
-			err = xerrors.Errorf("failed to override message param json marshaller: %v", r)
+			err = fmt.Errorf("failed to override message param json marshaller: %v", r)
 		}
 	}()
 	pwt := paramWrapperType{

@@ -2,13 +2,13 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/go-pg/pg/v10"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/wait"
 )
@@ -37,7 +37,7 @@ func WaitForExclusiveDatabase(ctx context.Context, tb testing.TB) (*pg.DB, func(
 
 	// Check if connection credentials are valid and PostgreSQL is up and running.
 	if err := db.Ping(ctx); err != nil {
-		return nil, db.Close, xerrors.Errorf("ping database: %w", err)
+		return nil, db.Close, fmt.Errorf("ping database: %w", err)
 	}
 
 	release, err := WaitForExclusiveDatabaseLock(ctx, db)
@@ -72,10 +72,10 @@ func WaitForExclusiveDatabaseLock(ctx context.Context, db *pg.DB) (func() error,
 		var released bool
 		_, err := db.QueryOneContext(ctx, pg.Scan(&released), `SELECT pg_advisory_unlock(?);`, int64(testDatabaseLockID))
 		if err != nil {
-			return xerrors.Errorf("unlocking exclusive lock: %w", err)
+			return fmt.Errorf("unlocking exclusive lock: %w", err)
 		}
 		if !released {
-			return xerrors.Errorf("exclusive lock not released")
+			return fmt.Errorf("exclusive lock not released")
 		}
 		return nil
 	}
@@ -89,4 +89,18 @@ func tryTestDatabaseLock(ctx context.Context, db *pg.DB) func(context.Context) (
 		_, err := db.QueryOneContext(ctx, pg.Scan(&acquired), `SELECT pg_try_advisory_lock(?);`, int64(testDatabaseLockID))
 		return acquired, err
 	}
+}
+
+// TruncateBlockTables ensures the indexing tables are empty
+func TruncateBlockTables(tb testing.TB, db *pg.DB) error {
+	_, err := db.Exec(`TRUNCATE TABLE block_headers`)
+	require.NoError(tb, err, "block_headers")
+
+	_, err = db.Exec(`TRUNCATE TABLE block_parents`)
+	require.NoError(tb, err, "block_parents")
+
+	_, err = db.Exec(`TRUNCATE TABLE drand_block_entries`)
+	require.NoError(tb, err, "drand_block_entries")
+
+	return nil
 }

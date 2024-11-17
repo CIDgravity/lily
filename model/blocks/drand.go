@@ -2,13 +2,15 @@ package blocks
 
 import (
 	"context"
+
+	"go.opencensus.io/tag"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
+
 	"github.com/filecoin-project/lotus/chain/types"
-	"go.opencensus.io/tag"
-	"go.opentelemetry.io/otel"
 )
 
 func NewDrandBlockEntries(header *types.BlockHeader) DrandBlockEntries {
@@ -22,23 +24,23 @@ func NewDrandBlockEntries(header *types.BlockHeader) DrandBlockEntries {
 	return out
 }
 
+// DrandBlockEntrie contains Drand randomness round numbers used in each block.
 type DrandBlockEntrie struct {
+	// Round is the round number of randomness used.
 	Round uint64 `pg:",pk,use_zero"`
-	Block string `pg:",notnull"`
+	// Block is the CID of the block.
+	Block string `pg:",pk,notnull"`
 }
 
-func (dbe *DrandBlockEntrie) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (dbe *DrandBlockEntrie) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "drand_block_entries"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, dbe)
 }
 
 type DrandBlockEntries []*DrandBlockEntrie
 
-func (dbes DrandBlockEntries) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (dbes DrandBlockEntries) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	if len(dbes) == 0 {
 		return nil
 	}
@@ -49,9 +51,6 @@ func (dbes DrandBlockEntries) Persist(ctx context.Context, s model.StorageBatch,
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "drand_block_entries"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, len(dbes))
 	return s.PersistModel(ctx, dbes)
 }

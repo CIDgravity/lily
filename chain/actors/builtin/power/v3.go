@@ -3,18 +3,23 @@ package power
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 
-	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/ipfs/go-cid"
 	cbg "github.com/whyrusleeping/cbor-gen"
 
+	"github.com/filecoin-project/go-address"
+	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
 	"github.com/filecoin-project/lily/chain/actors/adt"
 	"github.com/filecoin-project/lily/chain/actors/builtin"
-
 	builtin3 "github.com/filecoin-project/specs-actors/v3/actors/builtin"
 	power3 "github.com/filecoin-project/specs-actors/v3/actors/builtin/power"
 	adt3 "github.com/filecoin-project/specs-actors/v3/actors/util/adt"
+
+	"github.com/filecoin-project/lotus/chain/actors"
 )
 
 var _ State = (*state3)(nil)
@@ -31,10 +36,6 @@ func load3(store adt.Store, root cid.Cid) (State, error) {
 type state3 struct {
 	power3.State
 	store adt.Store
-}
-
-func (s *state3) Code() cid.Cid {
-	return builtin3.StoragePowerActorCodeID
 }
 
 func (s *state3) TotalLocked() (abi.TokenAmount, error) {
@@ -57,7 +58,7 @@ func (s *state3) TotalCommitted() (Claim, error) {
 }
 
 func (s *state3) MinerPower(addr address.Address) (Claim, bool, error) {
-	claims, err := s.claims()
+	claims, err := s.ClaimsMap()
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -77,15 +78,22 @@ func (s *state3) MinerNominalPowerMeetsConsensusMinimum(a address.Address) (bool
 }
 
 func (s *state3) TotalPowerSmoothed() (builtin.FilterEstimate, error) {
-	return builtin.FromV3FilterEstimate(s.State.ThisEpochQAPowerSmoothed), nil
+	return builtin.FilterEstimate(s.State.ThisEpochQAPowerSmoothed), nil
 }
 
 func (s *state3) MinerCounts() (uint64, uint64, error) {
 	return uint64(s.State.MinerAboveMinPowerCount), uint64(s.State.MinerCount), nil
 }
 
+func (s *state3) RampStartEpoch() int64 {
+	return 0
+}
+func (s *state3) RampDurationEpochs() uint64 {
+	return 0
+}
+
 func (s *state3) ListAllMiners() ([]address.Address, error) {
-	claims, err := s.claims()
+	claims, err := s.ClaimsMap()
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +115,7 @@ func (s *state3) ListAllMiners() ([]address.Address, error) {
 }
 
 func (s *state3) ForEachClaim(cb func(miner address.Address, claim Claim) error) error {
-	claims, err := s.claims()
+	claims, err := s.ClaimsMap()
 	if err != nil {
 		return err
 	}
@@ -134,8 +142,23 @@ func (s *state3) ClaimsChanged(other State) (bool, error) {
 	return !s.State.Claims.Equals(other3.State.Claims), nil
 }
 
-func (s *state3) claims() (adt.Map, error) {
+func (s *state3) ClaimsMap() (adt.Map, error) {
 	return adt3.AsMap(s.store, s.Claims, builtin3.DefaultHamtBitwidth)
+}
+
+func (s *state3) ClaimsMapBitWidth() int {
+
+	return builtin3.DefaultHamtBitwidth
+
+}
+
+func (s *state3) ClaimsMapHashFunction() func(input []byte) []byte {
+
+	return func(input []byte) []byte {
+		res := sha256.Sum256(input)
+		return res[:]
+	}
+
 }
 
 func (s *state3) decodeClaim(val *cbg.Deferred) (Claim, error) {
@@ -151,4 +174,21 @@ func fromV3Claim(v3 power3.Claim) Claim {
 		RawBytePower:    v3.RawBytePower,
 		QualityAdjPower: v3.QualityAdjPower,
 	}
+}
+
+func (s *state3) ActorKey() string {
+	return manifest.PowerKey
+}
+
+func (s *state3) ActorVersion() actorstypes.Version {
+	return actorstypes.Version3
+}
+
+func (s *state3) Code() cid.Cid {
+	code, ok := actors.GetActorCodeID(s.ActorVersion(), s.ActorKey())
+	if !ok {
+		panic(fmt.Errorf("didn't find actor %v code id for actor version %d", s.ActorKey(), s.ActorVersion()))
+	}
+
+	return code
 }

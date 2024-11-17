@@ -3,101 +3,148 @@ package actorstate
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"sync"
 	"time"
 
-	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/lotus/chain/types"
 	"github.com/ipfs/go-cid"
 	"go.opencensus.io/tag"
-	"golang.org/x/xerrors"
+	"go.opentelemetry.io/otel"
 
+	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/lily/chain/actors/builtin"
-	"github.com/filecoin-project/lily/lens"
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
 	visormodel "github.com/filecoin-project/lily/model/visor"
+	"github.com/filecoin-project/lily/tasks"
+
+	"github.com/filecoin-project/lotus/chain/types"
 )
 
-// A Task processes the extraction of actor state according the allowed types in its extracter map.
+// A Task processes the extraction of actor state according the allowed types in its extractor map.
 type Task struct {
-	node lens.API
-
-	extracterMap ActorExtractorMap
+	node            tasks.DataSource
+	extractorMap    ActorExtractorMap
+	dataTransformer ActorDataTransformer
 }
 
-func NewTask(node lens.API, extracterMap ActorExtractorMap) *Task {
-	p := &Task{
+func NewTask(node tasks.DataSource, extractorMap ActorExtractorMap) *Task {
+	return &Task{
 		node:         node,
-		extracterMap: extracterMap,
+		extractorMap: extractorMap,
 	}
-	return p
 }
 
-func (t *Task) ProcessActors(ctx context.Context, ts *types.TipSet, pts *types.TipSet, candidates map[string]lens.ActorStateChange, emsgs []*lens.ExecutedMessage) (model.Persistable, *visormodel.ProcessingReport, error) {
-	log.Debugw("processing actor state changes", "height", ts.Height(), "parent_height", pts.Height())
+func NewTaskWithTransformer(node tasks.DataSource, extractorMap ActorExtractorMap, dataTransformer ActorDataTransformer) *Task {
+	return &Task{
+		node:            node,
+		extractorMap:    extractorMap,
+		dataTransformer: dataTransformer,
+	}
+}
 
+const actorChangeLimiterEnv = "LILY_ACTOR_CHANGE_LIMITER"
+
+const defaultActorChangeLimit = 10000
+
+// Skip task processing when actor state changes abnormally.
+func (t *Task) exceedsActorChangeLimit(changes map[address.Address]tasks.ActorStateChange) bool {
+	// The 10,000 is a default threshold
+	limit := defaultActorChangeLimit
+
+	// Access the custom threshold set in the environment variable
+	s, ok := os.LookupEnv(actorChangeLimiterEnv)
+	if ok {
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err == nil {
+			limit = int(v)
+		}
+	}
+
+	return len(changes) > limit
+}
+
+func (t *Task) ProcessActors(ctx context.Context, current *types.TipSet, executed *types.TipSet, candidates tasks.ActorStateChangeDiff) (model.Persistable, *visormodel.ProcessingReport, error) {
+	ctx, span := otel.Tracer("").Start(ctx, "ProcessActors")
+	defer span.End()
 	report := &visormodel.ProcessingReport{
-		Height:    int64(pts.Height()),
-		StateRoot: pts.ParentState().String(),
+		Height:    int64(current.Height()),
+		StateRoot: current.ParentState().String(),
 		Status:    visormodel.ProcessingStatusOK,
 	}
 
-	ll := log.With("height", int64(ts.Height()))
-
 	// Filter to just allowed actors
-	actors := map[string]lens.ActorStateChange{}
+	actors := make(map[address.Address]tasks.ActorStateChange)
 	for addr, ch := range candidates {
-		if t.extracterMap.Allow(ch.Actor.Code) {
+		if t.extractorMap.Allow(ch.Actor.Code) {
 			actors[addr] = ch
 		}
+	}
+	ll := log.With("height", int64(current.Height()))
+	ll.Debug("processing actor state changes")
+
+	if len(actors) == 0 {
+		ll.Debug("no actor state changes found")
+		return model.PersistableList{}, report, nil
+	}
+
+	if t.exceedsActorChangeLimit(actors) {
+		err := fmt.Errorf("task skipped - max limit for handling actor state changes")
+		report.ErrorsDetected = err
+		return nil, report, nil
 	}
 
 	data := make(model.PersistableList, 0, len(actors))
 	errorsDetected := make([]*ActorStateError, 0, len(actors))
 	skippedActors := 0
 
-	if len(actors) == 0 {
-		ll.Debugw("no actor state changes found")
-		return data, report, nil
-	}
-
 	start := time.Now()
-	ll.Debugw("found actor state changes", "count", len(actors))
+	ll.Debug("found actor state changes", "count", len(actors))
 
-	// Run each task concurrently
 	results := make(chan *ActorStateResult, len(actors))
-	for addr, ch := range actors {
-		go t.runActorStateExtraction(ctx, ts, pts, addr, ch, emsgs, results)
-	}
+	// closes result when done, runs extraction for each actor in actors concurrently.
+	t.startActorStateExtraction(ctx, current, executed, actors, results)
 
 	// Gather results
-	inFlight := len(actors)
-	for inFlight > 0 {
-		res := <-results
-		inFlight--
-		lla := log.With("height", int64(ts.Height()), "actor", builtin.ActorNameByCode(res.Code), "address", res.Address)
+	for res := range results {
+		select {
+		case <-ctx.Done():
+			return data, report, ctx.Err()
+		default:
+		}
+		lla := log.With("height", int64(current.Height()), "actor", builtin.ActorNameByCode(res.Code), "address", res.Address)
 
 		if res.Error != nil {
-			lla.Errorw("actor returned with error", "error", res.Error.Error())
+			lla.Errorw("actor returned with error", "code", builtin.ActorNameByCode(res.Code), "error", res.Error.Error())
 			errorsDetected = append(errorsDetected, &ActorStateError{
 				Code:    res.Code.String(),
 				Name:    builtin.ActorNameByCode(res.Code),
 				Head:    res.Head.String(),
-				Address: res.Address,
+				Address: res.Address.String(),
 				Error:   res.Error.Error(),
 			})
 			continue
 		}
 
 		if res.SkippedParse {
-			lla.Debugw("skipped actor without extracter")
+			lla.Warn("skipped actor without extractor", "code", builtin.ActorNameByCode(res.Code))
 			skippedActors++
 		}
 
 		data = append(data, res.Data)
 	}
 
-	log.Debugw("completed processing actor state changes", "height", ts.Height(), "success", len(actors)-len(errorsDetected)-skippedActors, "errors", len(errorsDetected), "skipped", skippedActors, "time", time.Since(start))
+	if t.dataTransformer != nil {
+		td, err := t.dataTransformer.Transform(ctx, data)
+		if err != nil {
+			log.Warnw("failed to transform with error: ", err)
+		} else {
+			data = td
+		}
+	}
+
+	log.Debugw("completed processing actor state changes", "height", current.Height(), "success", len(actors)-len(errorsDetected)-skippedActors, "errors", len(errorsDetected), "skipped", skippedActors, "time", time.Since(start))
 
 	if skippedActors > 0 {
 		report.StatusInformation = fmt.Sprintf("did not parse %d actors", skippedActors)
@@ -110,52 +157,75 @@ func (t *Task) ProcessActors(ctx context.Context, ts *types.TipSet, pts *types.T
 	return data, report, nil
 }
 
-func (t *Task) runActorStateExtraction(ctx context.Context, ts *types.TipSet, pts *types.TipSet, addrStr string, ch lens.ActorStateChange, emsgs []*lens.ExecutedMessage, results chan *ActorStateResult) {
-	ctx, _ = tag.New(ctx, tag.Upsert(metrics.ActorCode, builtin.ActorNameByCode(ch.Actor.Code)))
+func (t *Task) startActorStateExtraction(ctx context.Context, current, executed *types.TipSet, actors tasks.ActorStateChangeDiff, results chan *ActorStateResult) {
+	var wg sync.WaitGroup
 
-	res := &ActorStateResult{
-		Code:    ch.Actor.Code,
-		Head:    ch.Actor.Head,
-		Address: addrStr,
-	}
-	defer func() {
-		results <- res
-	}()
-
-	addr, err := address.NewFromString(addrStr)
+	// Setup the cache for robust address
+	err := t.node.SetIdRobustAddressMap(ctx, current.Key())
 	if err != nil {
-		res.Error = xerrors.Errorf("failed to parse address: %w", err)
-		return
+		log.Errorf("Error at setting IdRobustAddressMap: %v", err)
 	}
 
-	info := ActorInfo{
-		Actor:           ch.Actor,
-		ChangeType:      ch.ChangeType,
-		Address:         addr,
-		ParentStateRoot: ts.ParentState(),
-		Epoch:           ts.Height(),
-		TipSet:          ts,
-		ParentTipSet:    pts,
-	}
+	for addr, ac := range actors {
+		addr := addr
+		ac := ac
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-	extracter, ok := t.extracterMap.GetExtractor(ch.Actor.Code)
-	if !ok {
-		res.SkippedParse = true
-	} else {
-		// Parse state
-		data, err := extracter.Extract(ctx, info, emsgs, t.node)
-		if err != nil {
-			res.Error = xerrors.Errorf("failed to extract parsed actor state: %w", err)
-			return
-		}
-		res.Data = data
+			ctx, _ = tag.New(ctx, tag.Upsert(metrics.ActorCode, builtin.ActorNameByCode(ac.Actor.Code)))
+
+			info := ActorInfo{
+				Actor:      ac.Actor,
+				ChangeType: ac.ChangeType,
+				Address:    addr,
+				Current:    current,
+				Executed:   executed,
+			}
+			ae, ok := t.extractorMap.GetExtractors(info.Actor.Code)
+			if !ok {
+				results <- &ActorStateResult{
+					Code:         ac.Actor.Code,
+					Head:         ac.Actor.Head,
+					Address:      addr,
+					SkippedParse: true,
+					Data:         nil,
+				}
+			} else {
+				for _, e := range ae {
+					e := e
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+
+						res := &ActorStateResult{
+							Code:    ac.Actor.Code,
+							Head:    ac.Actor.Head,
+							Address: addr,
+						}
+						stop := metrics.Timer(ctx, metrics.StateExtractionDuration)
+						defer stop()
+						data, err := e.Extract(ctx, info, t.node)
+						if err != nil {
+							res.Error = fmt.Errorf("failed to extract parsed actor state: %w", err)
+						}
+						res.Data = data
+						results <- res
+					}()
+				}
+			}
+		}()
 	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 }
 
 type ActorStateResult struct {
 	Code         cid.Cid
 	Head         cid.Cid
-	Address      string
+	Address      address.Address
 	Error        error
 	SkippedParse bool
 	Data         model.Persistable
@@ -172,7 +242,7 @@ type ActorStateError struct {
 // An ActorExtractorMap controls which actor types may be extracted.
 type ActorExtractorMap interface {
 	Allow(code cid.Cid) bool
-	GetExtractor(code cid.Cid) (ActorStateExtractor, bool)
+	GetExtractors(code cid.Cid) ([]ActorStateExtractor, bool)
 }
 
 type ActorExtractorFilter interface {
@@ -180,24 +250,32 @@ type ActorExtractorFilter interface {
 }
 
 // A RawActorExtractorMap extracts all types of actors using basic actor extraction which only parses shallow state.
-type RawActorExtractorMap struct{}
-
-func (RawActorExtractorMap) Allow(code cid.Cid) bool {
-	return true
+type RawActorExtractorMap struct {
+	extractors []ActorStateExtractor
 }
 
-func (RawActorExtractorMap) GetExtractor(code cid.Cid) (ActorStateExtractor, bool) {
-	return ActorExtractor{}, true
+func (r *RawActorExtractorMap) GetExtractors(_ cid.Cid) ([]ActorStateExtractor, bool) {
+	return r.extractors, true
+}
+
+func (r *RawActorExtractorMap) Register(ase ActorStateExtractor) {
+	r.extractors = append(r.extractors, ase)
+}
+
+func (r *RawActorExtractorMap) Allow(_ cid.Cid) bool {
+	return true
 }
 
 // A TypedActorExtractorMap extracts a single type of actor using full parsing of actor state
 type TypedActorExtractorMap struct {
-	codes *cid.Set
+	codes      *cid.Set
+	extractors []ActorStateExtractor
 }
 
-func NewTypedActorExtractorMap(codes []cid.Cid) *TypedActorExtractorMap {
+func NewTypedActorExtractorMap(codes []cid.Cid, ase ...ActorStateExtractor) *TypedActorExtractorMap {
 	t := &TypedActorExtractorMap{
-		codes: cid.NewSet(),
+		codes:      cid.NewSet(),
+		extractors: ase,
 	}
 	for _, c := range codes {
 		t.codes.Add(c)
@@ -209,9 +287,42 @@ func (t *TypedActorExtractorMap) Allow(code cid.Cid) bool {
 	return t.codes.Has(code)
 }
 
-func (t *TypedActorExtractorMap) GetExtractor(code cid.Cid) (ActorStateExtractor, bool) {
+func (t *TypedActorExtractorMap) GetExtractors(code cid.Cid) ([]ActorStateExtractor, bool) {
 	if !t.Allow(code) {
 		return nil, false
 	}
-	return GetActorStateExtractor(code)
+	return t.extractors, true
+}
+
+// A CustomTypedActorExtractorMap extracts a single type of actor using full parsing of actor state
+type CustomTypedActorExtractorMap struct {
+	codes      *cid.Set
+	extractors map[cid.Cid][]ActorStateExtractor
+}
+
+func NewCustomTypedActorExtractorMap(extractors map[cid.Cid][]ActorStateExtractor) *CustomTypedActorExtractorMap {
+	t := &CustomTypedActorExtractorMap{
+		codes:      cid.NewSet(),
+		extractors: extractors,
+	}
+	for c := range extractors {
+		t.codes.Add(c)
+	}
+	return t
+}
+
+func (c *CustomTypedActorExtractorMap) Allow(code cid.Cid) bool {
+	return c.codes.Has(code)
+}
+
+func (c *CustomTypedActorExtractorMap) GetExtractors(code cid.Cid) ([]ActorStateExtractor, bool) {
+	ex, ok := c.extractors[code]
+	if !ok {
+		return nil, false
+	}
+	return ex, true
+}
+
+type ActorDataTransformer interface {
+	Transform(ctx context.Context, data model.PersistableList) (model.PersistableList, error)
 }

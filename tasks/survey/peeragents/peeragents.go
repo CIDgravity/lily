@@ -2,15 +2,15 @@ package peeragents
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"time"
 
 	logging "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"golang.org/x/xerrors"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/filecoin-project/lily/model"
-	"github.com/filecoin-project/lily/model/surveyed"
+	observed "github.com/filecoin-project/lily/model/surveyed"
 )
 
 var log = logging.Logger("visor/tasks")
@@ -34,12 +34,12 @@ type Task struct {
 func (t *Task) Process(ctx context.Context) (model.Persistable, error) {
 	pid, err := t.api.ID(ctx)
 	if err != nil {
-		return nil, xerrors.Errorf("get peer id: %w", err)
+		return nil, fmt.Errorf("get peer id: %w", err)
 	}
 
 	peers, err := t.api.NetPeers(ctx)
 	if err != nil {
-		return nil, xerrors.Errorf("get peers: %w", err)
+		return nil, fmt.Errorf("get peers: %w", err)
 	}
 
 	start := time.Now()

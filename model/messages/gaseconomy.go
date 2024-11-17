@@ -2,17 +2,16 @@ package messages
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
 )
 
 type MessageGasEconomy struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"message_gas_economy"`
+	tableName struct{} `pg:"message_gas_economy"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	StateRoot string   `pg:",pk,notnull"`
 
@@ -28,8 +27,7 @@ type MessageGasEconomy struct {
 }
 
 type MessageGasEconomyV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"message_gas_economy"`
+	tableName struct{} `pg:"message_gas_economy"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	StateRoot string   `pg:",pk,notnull"`
 
@@ -71,12 +69,10 @@ func (g *MessageGasEconomy) AsVersion(version model.Version) (interface{}, bool)
 
 func (g *MessageGasEconomy) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "message_gas_economy"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vm, ok := g.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("MessageGasEconomy not supported for schema version %s", version)
+		return fmt.Errorf("MessageGasEconomy not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)

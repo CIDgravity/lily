@@ -1,19 +1,17 @@
 package commands
 
 import (
-	lotuscli "github.com/filecoin-project/lotus/cli"
 	"github.com/urfave/cli/v2"
+
+	lotuscli "github.com/filecoin-project/lotus/cli"
 )
 
 var StopCmd = &cli.Command{
 	Name:  "stop",
 	Usage: "Stop a running lily daemon",
-	Flags: flagSet(
-		clientAPIFlagSet,
-	),
 	Action: func(cctx *cli.Context) error {
 		ctx := lotuscli.ReqContext(cctx)
-		lapi, closer, err := GetAPI(ctx, clientAPIFlags.apiAddr, clientAPIFlags.apiToken)
+		lapi, closer, err := GetAPI(ctx)
 		if err != nil {
 			return err
 		}

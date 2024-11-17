@@ -2,24 +2,26 @@ package commands
 
 import (
 	"context"
+	"fmt"
+
+	"github.com/mitchellh/go-homedir"
+	"github.com/urfave/cli/v2"
 
 	paramfetch "github.com/filecoin-project/go-paramfetch"
+	"github.com/filecoin-project/lily/commands/util"
+	"github.com/filecoin-project/lily/config"
+
 	lotusbuild "github.com/filecoin-project/lotus/build"
 	lcli "github.com/filecoin-project/lotus/cli"
 	"github.com/filecoin-project/lotus/lib/lotuslog"
 	"github.com/filecoin-project/lotus/node/repo"
-	"github.com/mitchellh/go-homedir"
-	"github.com/urfave/cli/v2"
-	"golang.org/x/xerrors"
-
-	"github.com/filecoin-project/lily/commands/util"
-	"github.com/filecoin-project/lily/config"
 )
 
 var initFlags struct {
-	repo           string
-	config         string
-	importSnapshot string
+	repo                   string
+	config                 string
+	importSnapshot         string
+	backfillTipsetKeyRange int
 }
 
 var InitCmd = &cli.Command{
@@ -45,6 +47,13 @@ var InitCmd = &cli.Command{
 			EnvVars:     []string{"LILY_SNAPSHOT"},
 			Destination: &initFlags.importSnapshot,
 		},
+		&cli.IntFlag{
+			Name:        "backfill-tipsetkey-range",
+			Usage:       "Determine the extent of backfilling from the head.",
+			EnvVars:     []string{"LILY_BACKFILL_TIPSETKEY_RANGE"},
+			Value:       3600,
+			Destination: &initFlags.backfillTipsetKeyRange,
+		},
 	},
 	Action: func(c *cli.Context) error {
 		lotuslog.SetupLogLevels()
@@ -60,27 +69,27 @@ var InitCmd = &cli.Command{
 
 		r, err := repo.NewFS(initFlags.repo)
 		if err != nil {
-			return xerrors.Errorf("opening fs repo: %w", err)
+			return fmt.Errorf("opening fs repo: %w", err)
 		}
 
 		if initFlags.config != "" {
 			if err := config.EnsureExists(initFlags.config); err != nil {
-				return xerrors.Errorf("ensuring config is present at %q: %w", initFlags.config, err)
+				return fmt.Errorf("ensuring config is present at %q: %w", initFlags.config, err)
 			}
 			r.SetConfigPath(initFlags.config)
 		}
 
 		err = r.Init(repo.FullNode)
 		if err != nil && err != repo.ErrRepoExists {
-			return xerrors.Errorf("repo init error: %w", err)
+			return fmt.Errorf("repo init error: %w", err)
 		}
 
 		if err := paramfetch.GetParams(lcli.ReqContext(c), lotusbuild.ParametersJSON(), lotusbuild.SrsJSON(), 0); err != nil {
-			return xerrors.Errorf("fetching proof parameters: %w", err)
+			return fmt.Errorf("fetching proof parameters: %w", err)
 		}
 
 		if initFlags.importSnapshot != "" {
-			if err := util.ImportChain(ctx, r, initFlags.importSnapshot, true); err != nil {
+			if err := util.ImportChain(ctx, r, initFlags.importSnapshot, true, initFlags.backfillTipsetKeyRange); err != nil {
 				return err
 			}
 		}

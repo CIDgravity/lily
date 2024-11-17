@@ -4,16 +4,16 @@ import (
 	"context"
 	"time"
 
-	"github.com/filecoin-project/lily/metrics"
-	"github.com/filecoin-project/lily/model"
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/filecoin-project/lily/metrics"
+	"github.com/filecoin-project/lily/model"
 )
 
 type GapReport struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"visor_gap_reports"`
+	tableName struct{} `pg:"visor_gap_reports"` // nolint: structcheck
 
 	Height int64  `pg:",pk,use_zero"`
 	Task   string `pg:",pk"`
@@ -24,18 +24,15 @@ type GapReport struct {
 	ReportedAt time.Time `pg:",use_zero"`
 }
 
-func (p *GapReport) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (p *GapReport) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "visor_gap_reports"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, p)
 }
 
 type GapReportList []*GapReport
 
-func (pl GapReportList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (pl GapReportList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	if len(pl) == 0 {
 		return nil
 	}
@@ -46,9 +43,6 @@ func (pl GapReportList) Persist(ctx context.Context, s model.StorageBatch, versi
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "visor_gap_reports"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, len(pl))
 	return s.PersistModel(ctx, pl)
 }

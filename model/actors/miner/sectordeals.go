@@ -3,11 +3,12 @@ package miner
 import (
 	"context"
 
-	"github.com/filecoin-project/lily/metrics"
-	"github.com/filecoin-project/lily/model"
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/filecoin-project/lily/metrics"
+	"github.com/filecoin-project/lily/model"
 )
 
 type MinerSectorDeal struct {
@@ -17,18 +18,15 @@ type MinerSectorDeal struct {
 	DealID   uint64 `pg:",pk,use_zero"`
 }
 
-func (ds *MinerSectorDeal) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (ds *MinerSectorDeal) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_sector_deals"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, ds)
 }
 
 type MinerSectorDealList []*MinerSectorDeal
 
-func (ml MinerSectorDealList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (ml MinerSectorDealList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, span := otel.Tracer("").Start(ctx, "MinerSectorDealList.Persist")
 	if span.IsRecording() {
 		span.SetAttributes(attribute.Int("count", len(ml)))
@@ -36,8 +34,6 @@ func (ml MinerSectorDealList) Persist(ctx context.Context, s model.StorageBatch,
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_sector_deals"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(ml) == 0 {
 		return nil

@@ -2,18 +2,18 @@ package observed
 
 import (
 	"context"
-	"go.opentelemetry.io/otel/attribute"
 	"time"
+
+	"go.opencensus.io/tag"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
-	"go.opencensus.io/tag"
-	"go.opentelemetry.io/otel"
 )
 
 type PeerAgent struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"surveyed_peer_agents"`
+	tableName struct{} `pg:"surveyed_peer_agents"` // nolint: structcheck
 
 	// SurveyerPeerID is the peer ID of the node performing the survey
 	SurveyerPeerID string `pg:",pk,notnull"`
@@ -31,17 +31,15 @@ type PeerAgent struct {
 	Count int64 `pg:",use_zero,notnull"`
 }
 
-func (p *PeerAgent) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (p *PeerAgent) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "surveyed_peer_agents"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	return s.PersistModel(ctx, p)
 }
 
 type PeerAgentList []*PeerAgent
 
-func (l PeerAgentList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (l PeerAgentList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	if len(l) == 0 {
 		return nil
 	}
@@ -52,8 +50,6 @@ func (l PeerAgentList) Persist(ctx context.Context, s model.StorageBatch, versio
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "surveyed_peer_agents"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	return s.PersistModel(ctx, l)
 }

@@ -3,19 +3,20 @@ package schedule
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 
-	"github.com/filecoin-project/lotus/node/modules/helpers"
 	logging "github.com/ipfs/go-log/v2"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/storage"
 	"github.com/filecoin-project/lily/wait"
+
+	"github.com/filecoin-project/lotus/node/modules/helpers"
 )
 
 var log = logging.Logger("lily/schedule")
@@ -44,6 +45,9 @@ type JobConfig struct {
 	errorMsg string
 
 	log *zap.SugaredLogger
+
+	// Reporter is a job report
+	Reporter *Reporter
 
 	// Name is a human readable name for the job for use in logging
 	Name string
@@ -79,6 +83,15 @@ type JobConfig struct {
 	EndedAt time.Time
 }
 
+type Reporter struct {
+	// Current Height is the current height of the job
+	CurrentHeight int64
+}
+
+func (r *Reporter) UpdateCurrentHeight(height int64) {
+	r.CurrentHeight = height
+}
+
 // Locker represents a general lock that a job may need to take before operating.
 type Locker interface {
 	Lock(context.Context) error
@@ -109,7 +122,7 @@ func NewScheduler(jobDelay time.Duration, scheduledJobs ...*JobConfig) *Schedule
 	for _, st := range scheduledJobs {
 		s.jobID++
 		st.id = s.jobID
-		st.log = log.With("id", st.id, "name", st.Name)
+		st.log = log.With("id", st.id, "reporter", st.Name)
 		s.jobs[s.jobID] = st
 	}
 	return s
@@ -222,7 +235,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			s.jobsMu.Lock()
 
 			s.jobs[newTask.id] = newTask
-			newTask.log = log.With("id", newTask.id, "name", newTask.Name)
+			newTask.log = log.With("id", newTask.id, "reporter", newTask.Name)
 			newTask.log.Infow("new job received")
 
 			s.jobsMu.Unlock()
@@ -250,7 +263,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 func (s *Scheduler) StartJob(id JobID) error {
 	job, err := s.getJob(id)
 	if err != nil {
-		return xerrors.Errorf("start job: %w", err)
+		return fmt.Errorf("start job: %w", err)
 	}
 
 	job.lk.Lock()
@@ -258,7 +271,7 @@ func (s *Scheduler) StartJob(id JobID) error {
 	job.errorMsg = ""
 	if job.running {
 		job.lk.Unlock()
-		return xerrors.Errorf("starting worker ID: %d already running", id)
+		return fmt.Errorf("starting worker ID: %d already running", id)
 	}
 	job.lk.Unlock()
 
@@ -270,14 +283,14 @@ func (s *Scheduler) StartJob(id JobID) error {
 func (s *Scheduler) StopJob(id JobID) error {
 	job, err := s.getJob(id)
 	if err != nil {
-		return xerrors.Errorf("stop job: %w", err)
+		return fmt.Errorf("stop job: %w", err)
 	}
 
 	job.lk.Lock()
 	defer job.lk.Unlock()
 
 	if !job.running {
-		return xerrors.Errorf("stopping job ID: %d already stopped", id)
+		return fmt.Errorf("stopping job ID: %d already stopped", id)
 	}
 
 	job.log.Infow("stopping job", "id", job)
@@ -285,19 +298,25 @@ func (s *Scheduler) StopJob(id JobID) error {
 	return nil
 }
 
-func (s *Scheduler) WaitJob(id JobID) (*JobListResult, error) {
+func (s *Scheduler) WaitJob(ctx context.Context, id JobID) (*JobListResult, error) {
 	job, err := s.getJob(id)
 	if err != nil {
-		return nil, xerrors.Errorf("wait job: %w", err)
+		return nil, fmt.Errorf("wait job: %w", err)
 	}
 
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-job.Job.Done():
+		break
+
+	}
 	// wait on the job to complete
-	<-job.Job.Done()
 
 	// fetch the job to get the latest results (EndedAt and Running will have changed)
 	job, err = s.getJob(id)
 	if err != nil {
-		return nil, xerrors.Errorf("wait job: %w", err)
+		return nil, fmt.Errorf("wait job: %w", err)
 	}
 	return &JobListResult{
 		ID:                  job.id,
@@ -320,7 +339,7 @@ func (s *Scheduler) getJob(id JobID) (*JobConfig, error) {
 	job, ok := s.jobs[id]
 	s.jobsMu.Unlock()
 	if !ok {
-		return nil, xerrors.Errorf("job id: %d not found", id)
+		return nil, fmt.Errorf("job id: %d not found", id)
 	}
 	return job, nil
 }
@@ -341,6 +360,8 @@ type JobListResult struct {
 	Params    map[string]string
 	StartedAt time.Time
 	EndedAt   time.Time
+
+	Report *Reporter
 }
 
 var InvalidJobID = JobID(0)
@@ -357,7 +378,7 @@ func (s *Scheduler) Jobs() []JobListResult {
 	var out []JobListResult
 	for _, j := range s.jobs {
 		j.lk.Lock()
-		out = append(out, JobListResult{
+		result := JobListResult{
 			ID:                  j.id,
 			Name:                j.Name,
 			Tasks:               j.Tasks,
@@ -370,7 +391,9 @@ func (s *Scheduler) Jobs() []JobListResult {
 			Params:              j.Params,
 			StartedAt:           j.StartedAt,
 			EndedAt:             j.EndedAt,
-		})
+			Report:              j.Reporter,
+		}
+		out = append(out, result)
 		j.lk.Unlock()
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -382,6 +405,7 @@ func (s *Scheduler) Jobs() []JobListResult {
 func (s *Scheduler) execute(jc *JobConfig, complete chan struct{}) {
 	ctx, cancel := context.WithCancel(s.context)
 	ctx = metrics.WithTagValue(ctx, metrics.Job, jc.Name)
+	ctx = metrics.WithTagValue(ctx, metrics.JobType, jc.Type)
 
 	jc.lk.Lock()
 	jc.cancel = cancel
@@ -446,7 +470,9 @@ func (s *Scheduler) execute(jc *JobConfig, complete chan struct{}) {
 		}
 
 		metrics.RecordInc(ctx, metrics.JobStart)
+		metrics.RecordInc(ctx, metrics.JobRunning)
 		err := jc.Job.Run(ctx)
+		metrics.RecordDec(ctx, metrics.JobRunning)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				break

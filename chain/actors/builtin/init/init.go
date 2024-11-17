@@ -2,19 +2,16 @@
 package init
 
 import (
-	"golang.org/x/xerrors"
+	"fmt"
+
+	"github.com/ipfs/go-cid"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	builtin15 "github.com/filecoin-project/go-state-types/builtin"
 	"github.com/filecoin-project/go-state-types/cbor"
-	"github.com/ipfs/go-cid"
-
-	"github.com/filecoin-project/lotus/chain/types"
-	"github.com/filecoin-project/lotus/node/modules/dtypes"
-
-	"github.com/filecoin-project/lily/chain/actors/adt"
-	"github.com/filecoin-project/lily/chain/actors/builtin"
-
+	"github.com/filecoin-project/go-state-types/manifest"
 	builtin0 "github.com/filecoin-project/specs-actors/actors/builtin"
 	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
 	builtin3 "github.com/filecoin-project/specs-actors/v3/actors/builtin"
@@ -22,57 +19,53 @@ import (
 	builtin5 "github.com/filecoin-project/specs-actors/v5/actors/builtin"
 	builtin6 "github.com/filecoin-project/specs-actors/v6/actors/builtin"
 	builtin7 "github.com/filecoin-project/specs-actors/v7/actors/builtin"
+
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
+	"github.com/filecoin-project/lotus/chain/actors/adt"
+	"github.com/filecoin-project/lotus/chain/types"
+	"github.com/filecoin-project/lotus/node/modules/dtypes"
 )
-
-func init() {
-
-	builtin.RegisterActorState(builtin0.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load0(store, root)
-	})
-
-	builtin.RegisterActorState(builtin2.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load2(store, root)
-	})
-
-	builtin.RegisterActorState(builtin3.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load3(store, root)
-	})
-
-	builtin.RegisterActorState(builtin4.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load4(store, root)
-	})
-
-	builtin.RegisterActorState(builtin5.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load5(store, root)
-	})
-
-	builtin.RegisterActorState(builtin6.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load6(store, root)
-	})
-
-	builtin.RegisterActorState(builtin7.InitActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load7(store, root)
-	})
-}
 
 var (
-	Address = builtin7.InitActorAddr
-	Methods = builtin7.MethodsInit
+	Address = builtin15.InitActorAddr
+	Methods = builtin15.MethodsInit
 )
 
-func AllCodes() []cid.Cid {
-	return []cid.Cid{
-		builtin0.InitActorCodeID,
-		builtin2.InitActorCodeID,
-		builtin3.InitActorCodeID,
-		builtin4.InitActorCodeID,
-		builtin5.InitActorCodeID,
-		builtin6.InitActorCodeID,
-		builtin7.InitActorCodeID,
-	}
-}
-
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+		if name != manifest.InitKey {
+			return nil, fmt.Errorf("actor code is not init: %s", name)
+		}
+
+		switch actorstypes.Version(av) {
+
+		case actorstypes.Version8:
+			return load8(store, act.Head)
+
+		case actorstypes.Version9:
+			return load9(store, act.Head)
+
+		case actorstypes.Version10:
+			return load10(store, act.Head)
+
+		case actorstypes.Version11:
+			return load11(store, act.Head)
+
+		case actorstypes.Version12:
+			return load12(store, act.Head)
+
+		case actorstypes.Version13:
+			return load13(store, act.Head)
+
+		case actorstypes.Version14:
+			return load14(store, act.Head)
+
+		case actorstypes.Version15:
+			return load15(store, act.Head)
+
+		}
+	}
+
 	switch act.Code {
 
 	case builtin0.InitActorCodeID:
@@ -97,13 +90,68 @@ func Load(store adt.Store, act *types.Actor) (State, error) {
 		return load7(store, act.Head)
 
 	}
-	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+
+	return nil, fmt.Errorf("unknown actor code %s", act.Code)
+}
+
+func MakeState(store adt.Store, av actorstypes.Version, networkName string) (State, error) {
+	switch av {
+
+	case actorstypes.Version0:
+		return make0(store, networkName)
+
+	case actorstypes.Version2:
+		return make2(store, networkName)
+
+	case actorstypes.Version3:
+		return make3(store, networkName)
+
+	case actorstypes.Version4:
+		return make4(store, networkName)
+
+	case actorstypes.Version5:
+		return make5(store, networkName)
+
+	case actorstypes.Version6:
+		return make6(store, networkName)
+
+	case actorstypes.Version7:
+		return make7(store, networkName)
+
+	case actorstypes.Version8:
+		return make8(store, networkName)
+
+	case actorstypes.Version9:
+		return make9(store, networkName)
+
+	case actorstypes.Version10:
+		return make10(store, networkName)
+
+	case actorstypes.Version11:
+		return make11(store, networkName)
+
+	case actorstypes.Version12:
+		return make12(store, networkName)
+
+	case actorstypes.Version13:
+		return make13(store, networkName)
+
+	case actorstypes.Version14:
+		return make14(store, networkName)
+
+	case actorstypes.Version15:
+		return make15(store, networkName)
+
+	}
+	return nil, fmt.Errorf("unknown actor version %d", av)
 }
 
 type State interface {
 	cbor.Marshaler
 
 	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
 
 	ResolveAddress(address address.Address) (address.Address, bool, error)
 	MapAddressToNewID(address address.Address) (address.Address, error)
@@ -119,5 +167,55 @@ type State interface {
 	// Sets the network's name. This should only be used on upgrade/fork.
 	SetNetworkName(name string) error
 
-	addressMap() (adt.Map, error)
+	// Sets the next ID for the init actor. This should only be used for testing.
+	SetNextID(id abi.ActorID) error
+
+	// Sets the address map for the init actor. This should only be used for testing.
+	SetAddressMap(mcid cid.Cid) error
+
+	AddressMap() (adt.Map, error)
+	AddressMapBitWidth() int
+	AddressMapHashFunction() func(input []byte) []byte
+
+	GetState() interface{}
+}
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{
+		(&state0{}).Code(),
+		(&state2{}).Code(),
+		(&state3{}).Code(),
+		(&state4{}).Code(),
+		(&state5{}).Code(),
+		(&state6{}).Code(),
+		(&state7{}).Code(),
+		(&state8{}).Code(),
+		(&state9{}).Code(),
+		(&state10{}).Code(),
+		(&state11{}).Code(),
+		(&state12{}).Code(),
+		(&state13{}).Code(),
+		(&state14{}).Code(),
+		(&state15{}).Code(),
+	}
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+		actorstypes.Version0:  (&state0{}).Code(),
+		actorstypes.Version2:  (&state2{}).Code(),
+		actorstypes.Version3:  (&state3{}).Code(),
+		actorstypes.Version4:  (&state4{}).Code(),
+		actorstypes.Version5:  (&state5{}).Code(),
+		actorstypes.Version6:  (&state6{}).Code(),
+		actorstypes.Version7:  (&state7{}).Code(),
+		actorstypes.Version8:  (&state8{}).Code(),
+		actorstypes.Version9:  (&state9{}).Code(),
+		actorstypes.Version10: (&state10{}).Code(),
+		actorstypes.Version11: (&state11{}).Code(),
+		actorstypes.Version12: (&state12{}).Code(),
+		actorstypes.Version13: (&state13{}).Code(),
+		actorstypes.Version14: (&state14{}).Code(),
+		actorstypes.Version15: (&state15{}).Code(),
+	}
 }

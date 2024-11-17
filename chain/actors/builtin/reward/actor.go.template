@@ -2,53 +2,68 @@
 package reward
 
 import (
+    "fmt"
 	"github.com/filecoin-project/go-state-types/abi"
 	reward0 "github.com/filecoin-project/specs-actors/actors/builtin/reward"
 	"github.com/ipfs/go-cid"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-state-types/cbor"
 {{range .versions}}
-	builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
-{{- end}}
+    {{if (le . 7)}}
+	    builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
+    {{end}}
+{{end}}
+    builtin{{.latestVersion}} "github.com/filecoin-project/go-state-types/builtin"
 
 	"github.com/filecoin-project/lotus/chain/types"
 
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lily/chain/actors/adt"
 	"github.com/filecoin-project/lily/chain/actors/builtin"
-)
 
-func init() {
-{{range .versions}}
-	builtin.RegisterActorState(builtin{{.}}.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load{{.}}(store, root)
-	})
-{{end}}}
+     actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
+)
 
 var (
 	Address = builtin{{.latestVersion}}.RewardActorAddr
 	Methods = builtin{{.latestVersion}}.MethodsReward
 )
 
-func AllCodes() []cid.Cid {
-	return []cid.Cid{ {{range .versions}}
-        builtin{{.}}.RewardActorCodeID,
-    {{- end}}
-    }
-}
-
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+       if name != manifest.RewardKey {
+          return nil, fmt.Errorf("actor code is not reward: %s", name)
+       }
+
+       switch actorstypes.Version(av) {
+            {{range .versions}}
+                {{if (ge . 8)}}
+                case actorstypes.Version{{.}}:
+                     return load{{.}}(store, act.Head)
+                 {{end}}
+            {{end}}
+       }
+	}
+
 	switch act.Code {
 {{range .versions}}
-	case builtin{{.}}.RewardActorCodeID:
-		return load{{.}}(store, act.Head)
+    {{if (le . 7)}}
+        case builtin{{.}}.RewardActorCodeID:
+            return load{{.}}(store, act.Head)
+    {{end}}
 {{end}}
 	}
-	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+
+	return nil, fmt.Errorf("unknown actor code %s", act.Code)
 }
 
 type State interface {
 	cbor.Marshaler
+
+	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
 
 	ThisEpochBaselinePower() (abi.StoragePower, error)
 	ThisEpochReward() (abi.StoragePower, error)
@@ -62,8 +77,30 @@ type State interface {
 	CumsumBaseline() (abi.StoragePower, error)
 	CumsumRealized() (abi.StoragePower, error)
 
-	InitialPledgeForPower(abi.StoragePower, abi.TokenAmount, *builtin.FilterEstimate, abi.TokenAmount) (abi.TokenAmount, error)
+	// InitialPledgeForPower computes the pledge requirement for committing new quality-adjusted power
+	// to the network, given the current network total and baseline power, per-epoch  reward, and
+	// circulating token supply.
+	//
+	// Prior to actors version 15, the epochsSinceRampStart and rampDurationEpochs arguments have
+	// no effect. After actors version 15, these values can be derived from the power actor state
+	// properties RampStartEpoch and RampDurationEpochs.
+	InitialPledgeForPower(qaPower abi.StoragePower, networkTotalPledge abi.TokenAmount, networkQAPower *builtin.FilterEstimate, circSupply abi.TokenAmount, epochsSinceRampStart int64, rampDurationEpochs uint64) (abi.TokenAmount, error)
 	PreCommitDepositForPower(builtin.FilterEstimate, abi.StoragePower) (abi.TokenAmount, error)
 }
 
 type AwardBlockRewardParams = reward0.AwardBlockRewardParams
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{ {{range .versions}}
+        (&state{{.}}{}).Code(),
+    {{- end}}
+    }
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+        {{- range .versions}}
+            actorstypes.Version{{.}}: (&state{{.}}{}).Code(),
+        {{- end}}
+	}
+}

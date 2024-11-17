@@ -3,10 +3,14 @@ package diff
 import (
 	"bytes"
 
+	logging "github.com/ipfs/go-log/v2"
+	typegen "github.com/whyrusleeping/cbor-gen"
+
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/lily/chain/actors/adt"
-	typegen "github.com/whyrusleeping/cbor-gen"
 )
+
+var log = logging.Logger("lily/chain/diff")
 
 // ArrayDiffer generalizes adt.Array diffing by accepting a Deferred type that can unmarshalled to its corresponding struct
 // in an interface implantation.
@@ -24,10 +28,12 @@ type ArrayDiffer interface {
 // - All values that exist in curArr nnd not in prevArr are passed to ArrayDiffer.Add()
 // - All values that exist in preArr and in curArr are passed to ArrayDiffer.Modify()
 //   - It is the responsibility of ArrayDiffer.Modify() to determine if the values it was passed have been modified.
+//
 // If `preArr` and `curArr` are both backed by /v3/AMTs with the same bitwidth use the more efficient Amt method.
 func CompareArray(preArr, curArr adt.Array, out ArrayDiffer) error {
 	notNew := make(map[int64]struct{}, curArr.Length())
 	prevVal := new(typegen.Deferred)
+
 	if err := preArr.ForEach(prevVal, func(i int64) error {
 		curVal := new(typegen.Deferred)
 		found, err := curArr.Get(uint64(i), curVal)
@@ -35,10 +41,8 @@ func CompareArray(preArr, curArr adt.Array, out ArrayDiffer) error {
 			return err
 		}
 		if !found {
-			if err := out.Remove(uint64(i), prevVal); err != nil {
-				return err
-			}
-			return nil
+			err := out.Remove(uint64(i), prevVal)
+			return err
 		}
 
 		// no modification
@@ -80,6 +84,7 @@ type MapDiffer interface {
 // - All values that exist in curMap nnd not in prevArr are passed to MapDiffer.Add()
 // - All values that exist in preMap and in curMap are passed to MapDiffer.Modify()
 //   - It is the responsibility of ArrayDiffer.Modify() to determine if the values it was passed have been modified.
+//
 // If `preMap` and `curMap` are both backed by /v3/HAMTs with the same bitwidth and hash function use the more efficient Hamt method.
 func CompareMap(preMap, curMap adt.Map, out MapDiffer) error {
 	notNew := make(map[string]struct{})
@@ -96,10 +101,8 @@ func CompareMap(preMap, curMap adt.Map, out MapDiffer) error {
 			return err
 		}
 		if !found {
-			if err := out.Remove(key, prevVal); err != nil {
-				return err
-			}
-			return nil
+			err := out.Remove(key, prevVal)
+			return err
 		}
 
 		// no modification

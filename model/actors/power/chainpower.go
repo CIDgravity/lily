@@ -2,11 +2,11 @@ package power
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -32,8 +32,7 @@ type ChainPower struct {
 }
 
 type ChainPowerV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"chain_powers"`
+	tableName struct{} `pg:"chain_powers"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	StateRoot string   `pg:",pk"`
 
@@ -80,16 +79,14 @@ func (cp *ChainPower) AsVersion(version model.Version) (interface{}, bool) {
 }
 
 func (cp *ChainPower) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
-	ctx, span := otel.Tracer("").Start(ctx, "ChainPower.PersistWithTx")
+	ctx, span := otel.Tracer("").Start(ctx, "ChainPower.Persist")
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "chain_powers"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vcp, ok := cp.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("ChainPower not supported for schema version %s", version)
+		return fmt.Errorf("ChainPower not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -99,18 +96,14 @@ func (cp *ChainPower) Persist(ctx context.Context, s model.StorageBatch, version
 // ChainPowerList is a slice of ChainPowers for batch insertion.
 type ChainPowerList []*ChainPower
 
-// PersistWithTx makes a batch insertion of the list using the given
-// transaction.
 func (cpl ChainPowerList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
-	ctx, span := otel.Tracer("").Start(ctx, "ChainPowerList.PersistWithTx")
+	ctx, span := otel.Tracer("").Start(ctx, "ChainPowerList.Persist")
 	if span.IsRecording() {
 		span.SetAttributes(attribute.Int("count", len(cpl)))
 	}
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "chain_powers"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(cpl) == 0 {
 		return nil

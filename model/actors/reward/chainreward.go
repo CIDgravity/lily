@@ -2,10 +2,10 @@ package reward
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -26,8 +26,7 @@ type ChainReward struct {
 }
 
 type ChainRewardV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName                         struct{} `pg:"chain_rewards"`
+	tableName                         struct{} `pg:"chain_rewards"` // nolint:structcheck
 	Height                            int64    `pg:",pk,notnull,use_zero"`
 	StateRoot                         string   `pg:",pk,notnull"`
 	CumSumBaseline                    string   `pg:",notnull"`
@@ -74,12 +73,10 @@ func (r *ChainReward) Persist(ctx context.Context, s model.StorageBatch, version
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "chain_rewards"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vr, ok := r.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("ChainReward not supported for schema version %s", version)
+		return fmt.Errorf("ChainReward not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)

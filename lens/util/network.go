@@ -5,13 +5,14 @@ import (
 
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/network"
+
 	"github.com/filecoin-project/lotus/build"
 	"github.com/filecoin-project/lotus/chain/consensus/filcns"
 	"github.com/filecoin-project/lotus/chain/stmgr"
 )
 
 // DefaultNetwork is the filecoing network this version of lily has been built against
-var DefaultNetwork = NewNetwork(filcns.DefaultUpgradeSchedule(), build.NewestNetworkVersion)
+var DefaultNetwork = NewNetwork(filcns.DefaultUpgradeSchedule(), build.TestNetworkVersion)
 
 // Network holds properties of the filecoin network
 type Network struct {
@@ -45,7 +46,7 @@ func NewNetwork(us stmgr.UpgradeSchedule, current network.Version) *Network {
 	}
 }
 
-func (n *Network) Version(ctx context.Context, height abi.ChainEpoch) network.Version {
+func (n *Network) Version(_ context.Context, height abi.ChainEpoch) network.Version {
 	// The epochs here are the _last_ epoch for every version, or -1 if the
 	// version is disabled.
 	for _, spec := range n.networkVersions {

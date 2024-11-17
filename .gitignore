@@ -21,3 +21,6 @@ visor
 build/.*
 support/tools/bin
 
+# Deployment
+*.env
+.vscode/

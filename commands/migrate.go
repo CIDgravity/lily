@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/filecoin-project/lily/version"
 	"github.com/urfave/cli/v2"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/model"
 	"github.com/filecoin-project/lily/storage"
+	"github.com/filecoin-project/lily/version"
 )
 
 var defaultName = "visor"
@@ -22,7 +21,7 @@ func init() {
 	}
 }
 
-type VisorDBOpts struct {
+type LilyDBOpts struct {
 	DB                string
 	Name              string
 	DBSchema          string
@@ -31,7 +30,7 @@ type VisorDBOpts struct {
 	DBAllowMigrations bool
 }
 
-var VisorDBFlags VisorDBOpts
+var LilyDBFlags LilyDBOpts
 
 var dbConnectFlags = []cli.Flag{
 	&cli.StringFlag{
@@ -39,34 +38,34 @@ var dbConnectFlags = []cli.Flag{
 		EnvVars:     []string{"LILY_DB"},
 		Value:       "",
 		Usage:       "A connection string for the TimescaleDB database, for example postgres://postgres:password@localhost:5432/postgres?sslmode=disable",
-		Destination: &VisorDBFlags.DB,
+		Destination: &LilyDBFlags.DB,
 	},
 	&cli.IntFlag{
 		Name:        "db-pool-size",
 		EnvVars:     []string{"LILY_DB_POOL_SIZE"},
 		Value:       75,
-		Destination: &VisorDBFlags.DBPoolSize,
+		Destination: &LilyDBFlags.DBPoolSize,
 	},
 	&cli.StringFlag{
 		Name:        "name",
 		EnvVars:     []string{"LILY_NAME"},
 		Value:       defaultName,
 		Usage:       "A name that helps to identify this instance of visor.",
-		Destination: &VisorDBFlags.Name,
+		Destination: &LilyDBFlags.Name,
 	},
 	&cli.StringFlag{
 		Name:        "schema",
 		EnvVars:     []string{"LILY_SCHEMA"},
 		Value:       "public",
 		Usage:       "The name of the postgresql schema that holds the objects used by this instance of visor.",
-		Destination: &VisorDBFlags.DBSchema,
+		Destination: &LilyDBFlags.DBSchema,
 	},
 }
 
 var MigrateCmd = &cli.Command{
 	Name:  "migrate",
 	Usage: "Manage the schema version installed in a database.",
-	Flags: flagSet(
+	Flags: FlagSet(
 		dbConnectFlags,
 		[]cli.Flag{
 			&cli.StringFlag{
@@ -82,21 +81,21 @@ var MigrateCmd = &cli.Command{
 		},
 	),
 	Action: func(cctx *cli.Context) error {
-		if err := setupLogging(VisorLogFlags); err != nil {
-			return xerrors.Errorf("setup logging: %w", err)
+		if err := setupLogging(LilyLogFlags); err != nil {
+			return fmt.Errorf("setup logging: %w", err)
 		}
 
 		ctx := cctx.Context
 
-		db, err := storage.NewDatabase(ctx, VisorDBFlags.DB, VisorDBFlags.DBPoolSize, VisorDBFlags.Name, VisorDBFlags.DBSchema, false)
+		db, err := storage.NewDatabase(ctx, LilyDBFlags.DB, LilyDBFlags.DBPoolSize, LilyDBFlags.Name, LilyDBFlags.DBSchema, false)
 		if err != nil {
-			return xerrors.Errorf("connect database: %w", err)
+			return fmt.Errorf("connect database: %w", err)
 		}
 
 		if cctx.IsSet("to") {
 			targetVersion, err := model.ParseVersion(cctx.String("to"))
 			if err != nil {
-				return xerrors.Errorf("invalid schema version: %w", err)
+				return fmt.Errorf("invalid schema version: %w", err)
 			}
 
 			return db.MigrateSchemaTo(ctx, targetVersion)
@@ -108,13 +107,13 @@ var MigrateCmd = &cli.Command{
 
 		dbVersion, latestVersion, err := db.GetSchemaVersions(ctx)
 		if err != nil {
-			return xerrors.Errorf("get schema versions: %w", err)
+			return fmt.Errorf("get schema versions: %w", err)
 		}
 
 		log.Infof("current database schema is version %s, latest is %s", dbVersion, latestVersion)
 
 		if err := db.VerifyCurrentSchema(ctx); err != nil {
-			return xerrors.Errorf("verify schema: %w", err)
+			return fmt.Errorf("verify schema: %w", err)
 		}
 
 		log.Infof("database schema is supported by this version of visor")

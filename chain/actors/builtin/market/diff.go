@@ -7,14 +7,12 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 	cbg "github.com/whyrusleeping/cbor-gen"
 
-	"github.com/filecoin-project/go-amt-ipld/v3"
+	"github.com/filecoin-project/go-amt-ipld/v4"
 	"github.com/filecoin-project/go-state-types/abi"
-
-	builtin0 "github.com/filecoin-project/specs-actors/actors/builtin"
-	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
-
 	"github.com/filecoin-project/lily/chain/actors/adt"
 	"github.com/filecoin-project/lily/chain/actors/adt/diff"
+	builtin0 "github.com/filecoin-project/specs-actors/actors/builtin"
+	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
 )
 
 var log = logging.Logger("lily/actors")
@@ -23,6 +21,7 @@ func DiffDealProposals(ctx context.Context, store adt.Store, pre, cur State) (*D
 	preOpts := pre.DealProposalsAmtBitwidth()
 	curOpts := cur.DealProposalsAmtBitwidth()
 	preP, err := pre.Proposals()
+
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +32,7 @@ func DiffDealProposals(ctx context.Context, store adt.Store, pre, cur State) (*D
 
 	diffContainer := NewMarketProposalsDiffContainer(preP, curP)
 	if requiresLegacyDiffing(pre, cur, preOpts, curOpts) {
-		log.Warn("actor AMT opts differ, running slower generic array diff", "preCID", pre.Code(), "curCID", cur.Code())
+		log.Warn("actor AMT opts differ, running slower generic array diff ", "preCID ", pre.Code(), "curCID ", cur.Code())
 		if err := diff.CompareArray(preP.array(), curP.array(), diffContainer); err != nil {
 			return nil, fmt.Errorf("diffing deal states: %w", err)
 		}
@@ -115,7 +114,7 @@ func DiffDealStates(ctx context.Context, store adt.Store, pre, cur State) (*Deal
 
 	diffContainer := NewMarketStatesDiffContainer(preS, curS)
 	if requiresLegacyDiffing(pre, cur, preOpts, curOpts) {
-		log.Warn("actor AMT opts differ, running slower generic array diff", "preCID", pre.Code(), "curCID", cur.Code())
+		log.Warn("actor AMT opts differ, running slower generic array diff ", "preCID ", pre.Code(), "curCID ", cur.Code())
 		if err := diff.CompareArray(preS.array(), curS.array(), diffContainer); err != nil {
 			return nil, fmt.Errorf("diffing deal states: %w", err)
 		}
@@ -186,7 +185,7 @@ func (d *marketStatesDiffContainer) Add(key uint64, val *cbg.Deferred) error {
 	if err != nil {
 		return err
 	}
-	d.Results.Added = append(d.Results.Added, DealIDState{abi.DealID(key), *ds})
+	d.Results.Added = append(d.Results.Added, DealIDState{abi.DealID(key), ds})
 	return nil
 }
 
@@ -199,7 +198,7 @@ func (d *marketStatesDiffContainer) Modify(key uint64, from, to *cbg.Deferred) e
 	if err != nil {
 		return err
 	}
-	if *dsFrom != *dsTo {
+	if dsFrom != dsTo {
 		d.Results.Modified = append(d.Results.Modified, DealStateChange{abi.DealID(key), dsFrom, dsTo})
 	}
 	return nil
@@ -210,6 +209,6 @@ func (d *marketStatesDiffContainer) Remove(key uint64, val *cbg.Deferred) error 
 	if err != nil {
 		return err
 	}
-	d.Results.Removed = append(d.Results.Removed, DealIDState{abi.DealID(key), *ds})
+	d.Results.Removed = append(d.Results.Removed, DealIDState{abi.DealID(key), ds})
 	return nil
 }

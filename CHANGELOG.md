@@ -5,6 +5,689 @@ The format is a variant of [Keep a Changelog](https://keepachangelog.com/en/1.0.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Breaking changes should trigger an increment to the major version. Features increment the minor version and fixes or other changes increment the patch number.
 
+<a name="v0.21.0"></a>
+
+## [v0.21.0] - 2024-11-13
+
+### Feat
+* feat: update README.md by @Terryhung in https://github.com/filecoin-project/lily/pull/1314
+* feat: upgrade filecoin-ffi version by @Terryhung in https://github.com/filecoin-project/lily/pull/1322
+
+
+### Chore
+* chore: upgrade lotus to v1.29.1 by @Terryhung in https://github.com/filecoin-project/lily/pull/1318
+* chore: upgrade lotus version and golang version by @Terryhung in https://github.com/filecoin-project/lily/pull/1320
+* chore: upgrade lotus to v1.30.0 for nv24 by @Terryhung in https://github.com/filecoin-project/lily/pull/1321
+
+### Fix
+* fix: the error of logic and return by @Terryhung in https://github.com/filecoin-project/lily/pull/1313
+* fix: downgrade the bls version to stable version by @Terryhung in https://github.com/filecoin-project/lily/pull/1323
+
+## [v0.20.2] - 2024-08-01
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.40](https://github.com/filecoin-project/lily/blob/master/schemas/v1/40_add_chaineconomics_v2.go)
+
+### feat
+* feat: add new table for nv23 by @Terryhung in https://github.com/filecoin-project/lily/pull/1311
+
+
+## [v0.20.1] - 2024-07-30
+
+### Chore
+* chore: upgrade lotus to v1.28.1 (https://github.com/filecoin-project/lily/pull/1309)
+
+<a name="v0.20.0"></a>
+
+## [v0.20.0] - 2024-07-26
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.39](https://github.com/filecoin-project/lily/blob/master/schemas/v1/39_add_locked_fil_v2_chaineconomics.go)
+
+### Feat
+* feat: add new column for locked_fil_v2 in chain_economics and address_type in data_cap_balances (https://github.com/filecoin-project/lily/pull/1306)
+
+### Chore
+* chore: upgrade the lotus version to 1.27.0 (https://github.com/filecoin-project/lily/pull/1303)
+* chore: upgrade lotus to 1.27.1 (https://github.com/filecoin-project/lily/pull/1304)
+* chore: update the actor versions (https://github.com/filecoin-project/lily/pull/1305)
+* chore: update lotus version for nv23 (1.28.0-rc5) (https://github.com/filecoin-project/lily/pull/1307)
+
+<a name="v0.19.0"></a>
+
+## [v0.19.0] - 2024-05-31
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.37](https://github.com/filecoin-project/lily/blob/master/schemas/v1/37_change_pkey_builtin_actor_event.go)
+* [1.38](https://github.com/filecoin-project/lily/blob/master/schemas/v1/38_miner_sector_info_v2.go)
+
+### Feat
+* feat: add new column for builtin_actor_events (https://github.com/filecoin-project/lily/pull/1290)
+* feat: add new task miner sector deal v2 (https://github.com/filecoin-project/lily/pull/1293)
+* feat: refine the provider sectors func (https://github.com/filecoin-project/lily/pull/1294)
+* feat: Refine the filter for the GetActorEventsRaw (https://github.com/filecoin-project/lily/pull/1295)
+* feat: refine the miner sector event by using builtin_actor_event function (https://github.com/filecoin-project/lily/pull/1298)
+* feat: refine miner_sector_deal_v2 performance issue (https://github.com/filecoin-project/lily/pull/1300)
+* feat: refactor builtin actor event (https://github.com/filecoin-project/lily/pull/1301)
+
+### Fix
+* fix: use the new library to parse cid from builtin_actor_event (https://github.com/filecoin-project/lily/pull/1292)
+
+
+<a name="v0.18.0"></a>
+
+## [v0.18.0] - 2024-04-23
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.36](https://github.com/filecoin-project/lily/blob/master/schemas/v1/36_builtin_actor_event.go)
+
+### Feat
+* feat: Refine the market diff function (https://github.com/filecoin-project/lily/pull/1286)
+* feat: add builtin-actor-event task (https://github.com/filecoin-project/lily/pull/1287)
+
+### Chore
+* chore: upgrade the lotus version to v1.26.3 (https://github.com/filecoin-project/lily/pull/1288)
+
+
+<a name="v0.17.4"></a>
+
+## [v0.17.5 - 2024-03-28]
+
+### Chore
+* chore: update the lotus to 1.26.1
+
+  
+
+<a name="v0.17.3"></a>
+
+## [v0.17.3] - 2023-12-11
+
+### Fix
+* fix: use exponential backoff to attempt reconnect to tsdb (https://github.com/filecoin-project/lily/pull/1267)
+
+### Chore
+* chore: update the lotus to 1.25.0 (https://github.com/filecoin-project/lily/pull/1274)
+
+
+<a name="v0.17.2"></a>
+## [v0.17.2] - 2023-10-23
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.33](https://github.com/filecoin-project/lily/blob/master/schemas/v1/33_miner_actor_dumps.go)
+* [1.34](https://github.com/filecoin-project/lily/blob/master/schemas/v1/34_unsynced_block_headers.go)
+* [1.35](https://github.com/filecoin-project/lily/blob/master/schemas/v1/35_add_pkey_for_tables.go)
+  
+### Feat
+* feat: add new actor dump: miner (https://github.com/filecoin-project/lily/pull/1264)
+  * requires migration [1.33](https://github.com/filecoin-project/lily/blob/master/schemas/v1/33_miner_actor_dumps.go)
+* feat: add new job to find out orphan block (https://github.com/filecoin-project/lily/pull/1265)
+  * requires migration [1.34](https://github.com/filecoin-project/lily/blob/master/schemas/v1/34_unsynced_block_headers.go)
+* feat: Add new function for filtering invalid message (https://github.com/filecoin-project/lily/pull/1269)
+* feat: add the cache for robust address by @Terryhung in https://github.com/filecoin-project/lily/pull/1273
+
+### Fix
+* fix: remove the typo in fevm transactions model (https://github.com/filecoin-project/lily/pull/1262)
+* fix: the peer_id encode error (https://github.com/filecoin-project/lily/pull/1268)
+* fix: align the pkey in model to real database schema (https://github.com/filecoin-project/lily/pull/1271)
+  * requires migration [1.35](https://github.com/filecoin-project/lily/blob/master/schemas/v1/35_add_pkey_for_tables.go)
+* fix: hot fix migration script (https://github.com/filecoin-project/lily/pull/1272)
+
+### Chore
+* chore: update the lotus version to 1.23.3 (https://github.com/filecoin-project/lily/pull/1251)
+* chore(deps): bump actions/checkout from 3 to 4 (https://github.com/filecoin-project/lily/pull/1263)
+
+
+<a name="v0.17.1"></a>
+## [v0.17.1] - 2023-8-30
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.30](https://github.com/filecoin-project/lily/blob/master/schemas/v1/30_fevm_actor_dumps.go)
+* [1.31](https://github.com/filecoin-project/lily/blob/master/schemas/v1/31_add_message_and_address_and_actor_names_to_fevm_transcation.go)
+* [1.32](https://github.com/filecoin-project/lily/blob/master/schemas/v1/32_change_the_fevm_trace_pkey.go)
+
+  
+### Feat
+* feat: add actor dump processor and task (https://github.com/filecoin-project/lily/pull/1245)
+  * requires migration [1.30](https://github.com/filecoin-project/lily/blob/master/schemas/v1/30_fevm_actor_dumps.go)
+* feat: add new config to prefect service (https://github.com/filecoin-project/lily/pull/1257)
+* feat: add more fields in fevm transaction (https://github.com/filecoin-project/lily/pull/1255)
+  * requires migration [1.31](https://github.com/filecoin-project/lily/blob/master/schemas/v1/31_add_message_and_address_and_actor_names_to_fevm_transcation.go)
+
+  
+### Fix
+* fix: align the eth address in fevm trace (https://github.com/filecoin-project/lily/pull/1253)
+* fix: transaction hash in fevm trace (https://github.com/filecoin-project/lily/pull/1254)
+* fix: skip StateListActors if there is no actor dump processor (https://github.com/filecoin-project/lily/pull/1256)
+
+### Chore
+* chore: Change the pkey of fevm_traces and refine the previous migration script (https://github.com/filecoin-project/lily/pull/1259)
+  * requires migration [1.32](https://github.com/filecoin-project/lily/blob/master/schemas/v1/32_change_the_fevm_trace_pkey.go)
+
+
+<a name="v0.17.0"></a>
+## [v0.17.0] - 2023-8-1
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.22](https://github.com/filecoin-project/lily/blob/master/schemas/v1/22_fevm_block_header.go)
+* [1.23](https://github.com/filecoin-project/lily/blob/master/schemas/v1/23_fevm_receipt.go)
+* [1.24](https://github.com/filecoin-project/lily/blob/master/schemas/v1/24_fevm_transaction.go)
+* [1.25](https://github.com/filecoin-project/lily/blob/master/schemas/v1/25_fevm_contract.go)
+* [1.26](https://github.com/filecoin-project/lily/blob/master/schemas/v1/26_fevm_rename_table.go)
+* [1.27](https://github.com/filecoin-project/lily/blob/master/schemas/v1/27_fevm_traces.go)
+* [1.28](https://github.com/filecoin-project/lily/blob/master/schemas/v1/28_add_actor_names_to_fevm_traces.go)
+* [1.29](https://github.com/filecoin-project/lily/blob/master/schemas/v1/29_add_parsed_return_to_receipt_returns.go)
+
+### Feat
+* feat: add new task: fevm_block_header (https://github.com/filecoin-project/lily/pull/1207)
+  * requires migration [1.22](https://github.com/filecoin-project/lily/blob/master/schemas/v1/22_fevm_block_header.go)
+* feat: add new task for fevm receipt (https://github.com/filecoin-project/lily/pull/1208)
+  * requires migration [1.23](https://github.com/filecoin-project/lily/blob/master/schemas/v1/23_fevm_receipt.go)
+* feat: add new option for walk config (https://github.com/filecoin-project/lily/pull/1212)
+* feat: add new task: fevm_transaction (https://github.com/filecoin-project/lily/pull/1213)
+  * requires migration [1.24](https://github.com/filecoin-project/lily/blob/master/schemas/v1/24_fevm_transaction.go)
+* feat: add new task fevm contract (https://github.com/filecoin-project/lily/pull/1214)
+  * requires migration [1.25](https://github.com/filecoin-project/lily/blob/master/schemas/v1/25_fevm_contract.go)
+* feat: add new task for fevm trace (https://github.com/filecoin-project/lily/pull/1217)
+  * requires migration [1.27](https://github.com/filecoin-project/lily/blob/master/schemas/v1/27_fevm_traces.go)
+* feat: add more description for fevm models (https://github.com/filecoin-project/lily/pull/1231)
+* feat: change the logging condition for parsing internal message (https://github.com/filecoin-project/lily/pull/1243)
+* feat: add human readable actor codes in fevm_traces (https://github.com/filecoin-project/lily/pull/1240)
+  * requires migration [1.28](https://github.com/filecoin-project/lily/blob/master/schemas/v1/28_add_actor_names_to_fevm_traces.go)
+* feat: change the splitstore setting in config and replace returning error with  logging error in parsing vm_message ( https://github.com/filecoin-project/lily/pull/1246)
+* feat: add new columns for receipts table (https://github.com/filecoin-project/lily/pull/1248)
+  * requires migration [1.29](https://github.com/filecoin-project/lily/blob/master/schemas/v1/29_add_parsed_return_to_receipt_returns.go)
+  
+### Fix
+* fix: CodeCID should be at end of model (https://github.com/filecoin-project/lily/pull/1205)
+* fix: batch insert for locked_funds, sector_events and sector_info_v7 (https://github.com/filecoin-project/lily/pull/1216)
+* fix: batch insert miner_pre_commit_info (https://github.com/filecoin-project/lily/pull/1220)
+* fix: run more backfill tipsetkey during import chain (https://github.com/filecoin-project/lily/pull/1222)
+* fix: keep running the whole tipset task without cancel (https://github.com/filecoin-project/lily/pull/1219)
+* fix: rename the fevm related table (https://github.com/filecoin-project/lily/pull/1218)
+  * requires migration [1.26](https://github.com/filecoin-project/lily/blob/master/schemas/v1/26_fevm_rename_table.go)
+* fix: align the task height (https://github.com/filecoin-project/lily/pull/1225)
+* fix: logic error and remove useless function call (https://github.com/filecoin-project/lily/pull/1227)
+* fix: fix the logic and data type in fevm tasks (https://github.com/filecoin-project/lily/pull/1232)
+* fix: refine error handling for skipping actor limit (https://github.com/filecoin-project/lily/pull/1237)
+* fix: var names for chain commands (https://github.com/filecoin-project/lily/pull/1236)
+* fix: resize error channel (https://github.com/filecoin-project/lily/pull/1238)
+* fix: add Transform implementation for PreCommitInfoExtractorV8 (https://github.com/filecoin-project/lily/pull/1242)
+
+### Chore
+* chore: batch insert miner_sector_deal (https://github.com/filecoin-project/lily/pull/1221)
+* chore: add fevm supported tasks and refine the migration script (https://github.com/filecoin-project/lily/pull/1228)
+* chore(deps): bump actions/checkout from 2 to 3 (https://github.com/filecoin-project/lily/pull/1230)
+* chore(deps): bump github/codeql-action from 1 to 2 (https://github.com/filecoin-project/lily/pull/1229)
+* chore: do not require mac users to preset env vars (https://github.com/filecoin-project/lily/pull/1239)
+* chore: update the lotus version to 1.23.2 (https://github.com/filecoin-project/lily/pull/1241)
+
+
+<a name="v0.16.0"></a>
+## [v0.16.0] - 2023-5-15
+
+### Feat
+* feat: add single lily node deployment (https://github.com/filecoin-project/lily/pull/1203)
+* feat: add new command: prune (https://github.com/filecoin-project/lily/pull/1198)
+* feat: add filter for actor changes (https://github.com/filecoin-project/lily/pull/1195)
+
+### Fix
+* fix: batch insert actor & actor_state data (https://github.com/filecoin-project/lily/pull/1192)
+* fix: add missing span.End() (https://github.com/filecoin-project/lily/pull/1202)
+
+### Chore
+* chore: Update the actor codes versions (https://github.com/filecoin-project/lily/pull/1193)
+* chore: publish images for every master commit (https://github.com/filecoin-project/lily/pull/1196)
+* chore: move persist duration timer to ExportResult (https://github.com/filecoin-project/lily/pull/1197)
+* chore: update go-amt-ipld (https://github.com/filecoin-project/lily/pull/1199)
+* chore: update go-hamt-ipld (https://github.com/filecoin-project/lily/pull/1200)
+  
+
+<a name="v0.15.1"></a>
+## [v0.15.1] - 2023-4-25
+
+### Fix
+* fix: using the env variable for lily redis (https://github.com/filecoin-project/lily/pull/1185)
+
+
+### Chore
+* chore: update ffi version (https://github.com/filecoin-project/lily/pull/1184)
+
+
+<a name="v0.15.0"></a>
+## [v0.15.0] - 2023-4-25
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.19](https://github.com/filecoin-project/lily/blob/master/schemas/v1/19_fevm_actor_stats.go)
+* [1.20](https://github.com/filecoin-project/lily/blob/master/schemas/v1/20_actor_mappings.go)
+* [1.21](https://github.com/filecoin-project/lily/blob/master/schemas/v1/21_actor_add_state.go)
+
+### Feat
+* feat: Add retry opt for asynq https://github.com/filecoin-project/lily/pull/1167
+* Create FEVM actor stats task https://github.com/filecoin-project/lily/pull/1173
+  * implement fevm_actor_stats task and schema
+    * task name `fevm_actor_stats`
+    * requires migration [1.19](https://github.com/filecoin-project/lily/blob/master/schemas/v1/19_fevm_actor_stats.go)
+* feat: add cmd to print actor codes and methods in CSV format to stdout https://github.com/filecoin-project/lily/pull/1155
+  * implement cmd for storing actor codes and methods
+    * cmd `lily chain actor-codes` 
+    * requires migration [1.20](https://github.com/filecoin-project/lily/blob/master/schemas/v1/20_actor_mappings.go)
+* feat: add more tasks for notifier default tasks https://github.com/filecoin-project/lily/pull/1178
+* feat: Add the state and code_cid for actors table https://github.com/filecoin-project/lily/pull/1174
+  * add the new field in actors
+    * requires migration [1.21](https://github.com/filecoin-project/lily/blob/master/schemas/v1/21_actor_add_state.go)
+* feat: add grafana agent and refactor configs https://github.com/filecoin-project/lily/pull/1180
+* Read redis address & username from env https://github.com/filecoin-project/lily/pull/1179
+
+
+### Fix
+* fix: log unknown actor type without returning error https://github.com/filecoin-project/lily/pull/1169
+* fix: update the go-state-types for resolving vm message task error https://github.com/filecoin-project/lily/pull/1170
+* fix: do not error on null or empty params for parsing message https://github.com/filecoin-project/lily/pull/1171
+
+### Chore
+* feat:update the lotus version https://github.com/filecoin-project/lily/pull/1153
+* feat: update the lotus version to v1.23.0 https://github.com/filecoin-project/lily/pull/1175
+
+
+<a name="v0.14.1"></a>
+## [v0.14.1] - 2023-3-16
+
+### Feat
+* Support importing zstd snapshot directly ([#1156](https://github.com/filecoin-project/lily/pull/1156))
+
+### Fix
+* fix: Fix the error jsonp format in vm_message ([#1160](https://github.com/filecoin-project/lily/pull/1160))
+* fix: Add function for cleaning the Unicode escape sequence ([#1161](https://github.com/filecoin-project/lily/pull/1161))
+* fix: process actor version 10 tasks ([#1166](https://github.com/filecoin-project/lily/pull/1166))
+* fix: prevent unsuccessful task from retrying ([#1162](https://github.com/filecoin-project/lily/pull/1162))
+* fix: don't error on unknown method numbers for FEVM ([#1165](https://github.com/filecoin-project/lily/pull/1165))
+
+### Chore
+* Use 28e3cd44d91681c0 release from filecoin-ffi ([#1158](https://github.com/filecoin-project/lily/pull/1158))
+
+<a name="v0.14.0"></a>
+## [v0.14.0] - 2023-3-8
+
+## DATABASE MIGRATION
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.13](https://github.com/filecoin-project/lily/blob/master/schemas/v1/13_vm_messages_index.go)
+* [1.14](https://github.com/filecoin-project/lily/blob/master/schemas/v1/14_actor_events.go)
+* [1.15](https://github.com/filecoin-project/lily/blob/master/schemas/v1/15_message_params.go)
+* [1.16](https://github.com/filecoin-project/lily/blob/master/schemas/v1/16_receipt_returns.go)
+* [1.17](https://github.com/filecoin-project/lily/blob/master/schemas/v1/17_verifreg_claims.go)
+* [1.18](https://github.com/filecoin-project/lily/blob/master/schemas/v1/18_vm_messages_migration.go)
+
+### Feat
+* update command to print all actor codes and version ([#1111](https://github.com/filecoin-project/lily/pull/1111))
+* [command] add currentheight to job list ([#1131](https://github.com/filecoin-project/lily/pull/1131))
+* add logic for connecting and disconnecting from peers ([1133](https://github.com/filecoin-project/lily/pull/1133))
+* metrics for state & block store caches ([#1136](https://github.com/filecoin-project/lily/pull/1136))
+* upgrade to lotus v.1.20.0 with support for network version 18 (FEVM) ([#1140](https://github.com/filecoin-project/lily/pull/1140))
+  * implement actorevent task and schema
+    * task name `actor_events`
+    * requires migration [1.14](https://github.com/filecoin-project/lily/blob/master/schemas/v1/14_actor_events.go)
+    * parses and persists changes to actor events structure in nv18
+  * implement messageparam task and schema
+    * task name `message_params`
+    * requires migration [1.15](https://github.com/filecoin-project/lily/blob/master/schemas/v1/15_message_params.go)
+    * parses and persists changes to actor events structure in nv18
+  * implement receiptreturn task and schema
+    * task name `receipt_returns`
+    * requires migration [1.16](https://github.com/filecoin-project/lily/blob/master/schemas/v1/16_receipt_returns.go)
+    * parses and persists changes to actor events structure in nv18
+  * implement claim extractor and schema
+    * task name `verified_registry_claim`
+    * requires migration [1.17](https://github.com/filecoin-project/lily/blob/master/schemas/v1/17_verifreg_claims.go)
+    * parses and persists changes to actor events structure in nv18
+* Add docker compose file for notifier and worker ([#1138](https://github.com/filecoin-project/lily/pull/1138))
+
+### Fix
+* only parse vm messages with exit code OK ([#1112](https://github.com/filecoin-project/lily/pull/1112))
+* bug in verifreg verifier event tracking ([#1124](https://github.com/filecoin-project/lily/pull/1124))
+* add index column constraint to vm_messages table ([#1127](https://github.com/filecoin-project/lily/pull/1127))
+* move the models-* subcmd to a different cmd ([#1135](https://github.com/filecoin-project/lily/pull/1135))
+* reduce time bucket size ([#1143](https://github.com/filecoin-project/lily/pull/1143))
+
+### Chore
+* Cache proof params in production docker image by @placer14 in https://github.com/filecoin-project/lily/pull/1101
+* Migrate vm_messages to hypertable ([#1149](https://github.com/filecoin-project/lily/pull/1149))
+  * requires [1.18](https://github.com/filecoin-project/lily/blob/master/schemas/v1/18_vm_messages_migration.go)
+
+<a name="v0.13.0"></a>
+## [v0.13.0] - 2022-11-28
+
+## DATABASE MIGRATION
+
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.10](https://github.com/filecoin-project/lily/blob/v0.12.0/schemas/v1/10_miner_precommit_v9.go)
+* [1.11](https://github.com/filecoin-project/lily/blob/v0.13.0/schemas/v1/11_miner_beneficiary.go)
+* [1.12](https://github.com/filecoin-project/lily/blob/v0.13.0/schemas/v1/12_datacap_balance.go)
+
+### Feat
+* upgrade to lotus v1.18.0 with support for network version 17 ([#1080](https://github.com/filecoin-project/lily/pull/1080))
+  * implement precommitinfov9 task and schema
+    * task name `miner_pre_commit_info`
+    * requires migration [1.10](https://github.com/filecoin-project/lily/blob/v0.12.0/schemas/v1/10_miner_precommit_v9.go)
+    * parses and persists changes to miner PreCommit structure in nv17
+  * implement miner beneficiary task and schema
+    * task name `miner_beneficiary`
+    * requires migration [1.11](https://github.com/filecoin-project/lily/blob/v0.13.0/schemas/v1/11_miner_beneficiary.go)
+    * parses and persists miner beneficiary address added to miner info in nv17
+  * implement datacap balance task and schema
+    * task name `data_cap_balance`
+    * requires migration  [1.12](https://github.com/filecoin-project/lily/blob/v0.13.0/schemas/v1/12_datacap_balance.go)
+    * parses and persists datacap actor balances from singleton datacap actor in nv17
+
+### Fix
+* metrics & debugging link ([#1070](https://github.com/filecoin-project/lily/pull/1070))
+* use bitfield.MultiMerge to improve LoadSectorState performance ([#1086](https://github.com/filecoin-project/lily/pull/1086))
+* don't parse VM messages whose parent failed to apply ([#1091](https://github.com/filecoin-project/lily/pull/1091))
+* remove actor code mapping ([#1087](https://github.com/filecoin-project/lily/pull/1087))
+
+### Chore
+* fix metric name ([#1085](https://github.com/filecoin-project/lily/pull/1085))
+* create docker images for commits in `cd/staging` ([#1090](https://github.com/filecoin-project/lily/pull/1090))
+
+<a name="v0.12.0"></a>
+## [v0.12.0] - 2022-09-07
+
+## DATABASE MIGRATION
+
+This release includes a migration which must be applied before deploying against an existing database.
+* [1.8](https://github.com/filecoin-project/lily/blob/v0.12.0/schemas/v1/8_vm_messages.go)
+* [1.9](https://github.com/filecoin-project/lily/blob/master/schemas/v1/9_miner_protocols.go)
+
+### Feat
+* implement vm message extraction [#1027](https://github.com/filecoin-project/lily/pull/1027)
+  * task name `vm_messages`
+  * requires migration
+  * requires LOTUS_VM_ENABLE_TRACING=1 to be set on daemon executing task
+* implement miner protocol survey task [#1048](https://github.com/filecoin-project/lily/pull/1048)
+    * task name `minerprotocols`
+    * requires migration
+    * for use with the survey command.
+* add method for finding oldest state and computing state [#1038](https://github.com/filecoin-project/lily/pull/1038)
+    * commands:
+        * `$ lily chain state-inspect`
+        * `$ lily chain state-compute-range`
+        * `$ lily chain state-compute`
+* command to print actor CID's and version [#1026](https://github.com/filecoin-project/lily/pull/1026)
+  * command: `$ lily chain actor-codes`
+* tipSetWorker accepts all storage systems [#1035](https://github.com/filecoin-project/lily/pull/1035)
+* update docker-compose to use lily worker pattern [#1044](https://github.com/filecoin-project/lily/pull/1044)
+
+
+### Fix
+* extract miner sector state changes [#1058](https://github.com/filecoin-project/lily/pull/1032)
+  * improves accuracy of `miner_sector_events` task
+* replace ExecutedAndBlockMessages with individual methods [#1040](https://github.com/filecoin-project/lily/pull/1040)
+  * improves accuracy and performance of all message and receipt related tasks
+
+### Chore
+* lotus v1.17.0 [#1037](https://github.com/filecoin-project/lily/pull/1037)
+* upgrade docker engine [#1047](https://github.com/filecoin-project/lily/pull/1047)
+* removed unused gas calc from parsedmessages [#1056](https://github.com/filecoin-project/lily/pull/1056)
+* use web3.storage gateway [#1051](https://github.com/filecoin-project/lily/pull/1051)
+* prevent MinerSectorEvent panic on empty SectorStateEvents [#1053](https://github.com/filecoin-project/lily/pull/1053)
+* handle vm message param and return parsing [#1057](https://github.com/filecoin-project/lily/pull/1057)
+* correct column comment on vm_messages [#1058](https://github.com/filecoin-project/lily/pull/1058)
+
+<a name="v0.11.0"></a>
+## [v0.11.0] - 2022-06-05
+
+
+## DATABASE MIGRATION
+
+This release includes a migration which must be applied before deploying against an existing database.
+
+### Feat
+* support network version 16 [#988](https://github.com/filecoin-project/lily/pull/988)
+* add is_string column to market_deal_proposal model [#1015](https://github.com/filecoin-project/lily/pull/1015)
+
+### Fix
+* prevent panic on parent miner state nil [#1013](https://github.com/filecoin-project/lily/pull/1013)
+* allow tasks to be retired with block not found [#1016](https://github.com/filecoin-project/lily/pull/1016)
+* many incorrect pointer equality comparisons [#1018](https://github.com/filecoin-project/lily/pull/1018)
+
+### Chore
+* implement miner sector event extractor tests [#999](https://github.com/filecoin-project/lily/pull/999)
+* add output flag to sync status command [#1010](https://github.com/filecoin-project/lily/pull/1010)
+
+
+
+<a name="v0.10.1"></a>
+## [v0.10.1] - 2022-05-23
+
+# IMPORTANT!
+
+This release fixes a bug which causes data to be lost. This bug was introduced in `v0.9.0` and may require special attention around production of certain `miner`-based datasets. You can find details of the bug in [this issue](https://github.com/filecoin-project/lily/issues/997) along with their associated fixes. If you rely on your own Lily instances _AND HAVE DEPLOYED_ Lily `v0.9.0`, we recommend updating to `v0.10.1` or later. With `v0.10.1`, you may lily walk the epochs which were produced by `v0.9.0` and Lily will fill in the missing data.
+
+The following datasets are affected:
+- `miner_sector_infos_v7`
+- `miner_sector_infos`
+- `miner_sector_deals`
+- `miner_locked_funds`
+
+### Fix
+
+- `lily job wait` respects Ctrl-C ([#976](https://github.com/filecoin-project/lily/pull/976))
+- Register Miner Locked Funds ([#996](https://github.com/filecoin-project/lily/pull/996))
+- Ensure redis queue inspector is registered for metric export ([#1011](https://github.com/filecoin-project/lily/pull/1011))
+
+### Chore
+
+- Update dependencies
+  - lotus and FFI ([#973](https://github.com/filecoin-project/lily/pull/973))
+  - go-amt-ipld ([#974](https://github.com/filecoin-project/lily/pull/974))
+- Reject invalid tasks on client during job creation ([#975](https://github.com/filecoin-project/lily/pull/975))
+- Improve distributed indexing metrics ([#981](https://github.com/filecoin-project/lily/pull/981))
+- Fix `make test` ([#995](https://github.com/filecoin-project/lily/pull/995))
+- Index manager unit tests ([#982](https://github.com/filecoin-project/lily/pull/982))
+- Unify dev and CI linting ([#990](https://github.com/filecoin-project/lily/pull/990))
+- Implement unit tests for Miner Deal extraction ([#994](https://github.com/filecoin-project/lily/pull/994))
+- Implement unit tests for Tasktype and state processor lists ([#998](https://github.com/filecoin-project/lily/pull/998))
+- Walk test uses in memory storage ([#1000](https://github.com/filecoin-project/lily/pull/1000))
+- Increase resource_class for CI test ([#1003](https://github.com/filecoin-project/lily/pull/1003))
+
+<a name="v0.10.0"></a>
+## [v0.10.0] - 2022-05-23
+
+### Feat
+
+- Distributed Worker Pattern (#929)
+  - Implementation of pattern described in [Distributed Lily Worker Pattern Doc](https://www.notion.so/pl-strflt/Distributed-Lily-Worker-Pattern-bbf101e392144e4184fae1ef7074ee02)
+  - Modifies Lily to distribute tipset indexing across a pool of lily nodes using a redis queue. Lily may now run as a tipset-worker or a notifier
+    - Notifier
+      - Lily will add tipsets for indexing to a redis queue, walk, watch, fill, and index jobs may be used to notify the queue of tipsets to index.
+    - Tipset-Worker
+      - Lily will consume tipsets from a redis queue and index their state.
+- Improved Job CLI (#944)
+  - All jobs: `watch`, `walk`, `index`, `find`, `fill`, and `survey` are now under the `job run` command.
+  - Improved documentation describing how to run each type of job and the work it performs.
+  - Extend `watch`, `walk`, `index` and `fill` jobs with a sub-command `notify` which causes the corresponding job to notify configured redis queue of work to process.
+- Parallel HAMT Diffing (#952)
+  - Allows HAMTs to be diffed in parallel with a configurable number of goroutines, improving indexing performance.
+- Parallel AMT Diffing (#953)
+  - Allows AMTs to be diffed in parallel with a configurable number of goroutines, improving indexing performance.
+
+### Fix
+- Include parsed_message task in alias (#951)
+  - includes the `parsed_message` task in the `messages` task alias. 
+- Update urfave/cli to the latest version (#965)
+  - fixes #964 ensuring task names are properly parsed on the CLI.
+- Remove null characters from market_deal_proposal label field (#957)
+  - fixes #930 by preventing invalid data from being written to CSV files for the market_deal_proposal model
+
+### Chore
+- Adjust help models-list width (#959)
+- Update to lotus@v1.15.2 by (#954)
+
+
+<a name="v0.9.0"></a>
+## [v0.9.0] - 2022-04-21
+
+### Feat
+
+- Index Command (#871)
+
+   - Lily received a new command - **index** - The index command can be used to index a single tipset, referenced by either its height or its TipSetKey. This command will block until indexing the tipset has completed.
+   ```bash
+   NAME:
+      lily index - Index the state of a tipset from the filecoin blockchain.
+    
+   USAGE:
+      lily index command [command options] [arguments...]
+    
+   COMMANDS:
+      tipset   Index the state of a tipset from the filecoin blockchain by tipset key
+      height   Index the state of a tipset from the filecoin blockchain by height
+      help, h  Shows a list of commands or help for one command
+    
+   OPTIONS:
+      --tasks value      Comma separated list of tasks to run. Each task is reported separately in the database. [$LILY_TASKS]
+      --storage value    Name of storage that results will be written to. [$LILY_STORAGE]
+      --api value        Address of lily api in multiaddr format. (default: "/ip4/127.0.0.1/tcp/1231") [$LILY_API]
+      --api-token value  Authentication token for lily api. [$LILY_API_TOKEN]
+      --name value       Name of job for easy identification later. [$LILY_JOB_NAME]
+      --window value     Duration after which any indexing work not completed will be marked incomplete (default: 30s) [$LILY_WINDOW]
+      --help, -h         show help (default: false)
+   ```
+  
+- Granular Task Management (#871)
+  - Tasks in Lily now correspond to the tables they produce. Users of Lily can specify the exact models they would like Lily to extract as opposed to previous behavior that grouped sets of models under a singe task name. See the below table for a mapping of task names to models they extract, and note that previous task names (📃) now map to the set of tasks Lily will run.
+  - **NOTE: This requires that operators call `gap find` differently depending on whether they target the heights before or after the upgrade epoch (using the legacy task names in --tasks in the old epochs and using the granular task names in the newer epochs). Operators could optionally create a view which makes the legacy processing reports compatible with the new `gap find` query.**
+  - Lily Task Table
+
+    | Task Name | Model(s) |
+    |-----------|----------|
+    |📃 actorstatesinit | id_addresses |
+    |📃 actorstatesmarket | market_deal_proposals, market_deal_states |
+    |📃 actorstatesminer|miner_sector_deals, miner_sector_infos_v7, miner_sector_infos, miner_sector_posts, miner_pre_commit_infos, miner_sector_infos, miner_sector_events, miner_current_deadline_infos, miner_fee_debt, miner_locked_funds, miner_infos|
+    |📃 actorstatesmultisig|multisig_transactions|
+    |📃 actorstatespower|chain_powers, power_actor_claims|
+    |📃 actorstatesraw|actors, actor_states|
+    |📃 actorstatesreward|chain_rewards|
+    |📃 actorstatesverifreg|verified_registry_verified_clients, verified_registry_verifiers|
+    |📃 blocks|block_headers, block_parents, drand_block_entires|
+    |📃 chaineconomics|chain_economics|
+    |📃 consensus|chain_consensus|
+    |📃 implicitmessage|internal_messages, internal_parsed_messages|
+    |📃 messages|messages, block_messages, receipts, message_gas_economy, derived_gas_outputs|
+    |📃 msapprovals|multisig_approvals|
+    | actor|actors|
+    | actor_state|actor_states|
+    | block_header|block_headers|
+    | block_message|block_messages|
+    | block_parent|block_parents|
+    | chain_consensus|chain_consensus|
+    | chain_economics|chain_economics|
+    | chain_power|chain_powers|
+    | chain_reward|chain_rewards|
+    | derived_gas_outputs|derived_gas_outputs|
+    | drand_block_entrie|drand_block_entires|
+    | id_address|id_addresses|
+    | internal_messages|internal_messages|
+    | internal_parsed_messages|internal_parsed_messages|
+    | market_deal_proposal|market_deal_proposals|
+    | market_deal_state|market_deal_states|
+    | message|messages|
+    | message_gas_economy|message_gas_economy|
+    | miner_current_deadline_info|miner_current_deadlines|
+    | miner_fee_debt|miner_fee_debts|
+    | miner_info|miner_infos|
+    | miner_locked_fund|miner_locked_funds|
+    | miner_pre_commit_info|miner_pre_commit_infos|
+    | miner_sector_deal|miner_sector_deals|
+    | miner_sector_event|miner_sector_events|
+    | miner_sector_infos|miner_sector_infos|
+    | miner_sector_infos_v7|miner_sector_infos_v7|
+    | miner_sector_post|miner_sector_posts|
+    | multisig_approvals|multisig_approvals|
+    | multisig_transaction|multisig_transactions|
+    | parsed_message|parsed_messages|
+    | power_actor_claim|power_actor_claims|
+    | receipt|receipts|
+    | verified_registry_verified_client|verified_registry_clients|
+    | verified_registry_verifier|verified_registry_verifier|
+    As an example, the command:
+    ```bash
+    $ lily index height 1741960 --tasks=actorstatesraw,actorstatespower,actorstatesreward,actorstatesminer,actorstatesinit,actorstatesmarket,actorstatesmultisig,actorstatesverifreg,block,messages,chaineconomics,msapprovals,implicitmessage,consensus
+    ```
+    will produce the follow entries in the processing_reports table
+
+    | height | task | status |
+    | --- | --- | --- |
+    | 1741960 | verified_registry_verifier | OK |
+    | 1741960 | verified_registry_verified_client | OK |
+    | 1741960 | receipt | OK |
+    | 1741960 | power_actor_claim | OK |
+    | 1741960 | parsed_message | OK |
+    | 1741960 | multisig_transaction | OK |
+    | 1741960 | multisig_approvals | OK |
+    | 1741960 | miner_sector_post | OK |
+    | 1741960 | miner_sector_infos_v7 | OK |
+    | 1741960 | miner_sector_infos | OK |
+    | 1741960 | miner_sector_event | OK |
+    | 1741960 | miner_sector_deal | OK |
+    | 1741960 | miner_pre_commit_info | OK |
+    | 1741960 | miner_locked_fund | OK |
+    | 1741960 | miner_info | OK |
+    | 1741960 | miner_fee_debt | OK |
+    | 1741960 | miner_current_deadline_info | OK |
+    | 1741960 | message_gas_economy | OK |
+    | 1741960 | message | OK |
+    | 1741960 | market_deal_state | OK |
+    | 1741960 | market_deal_proposal | OK |
+    | 1741960 | internal_parsed_messages | OK |
+    | 1741960 | internal_messages | OK |
+    | 1741960 | id_address | OK |
+    | 1741960 | drand_block_entrie | OK |
+    | 1741960 | derived_gas_outputs | OK |
+    | 1741960 | chain_reward | OK |
+    | 1741960 | chain_power | OK |
+    | 1741960 | chain_economics | OK |
+    | 1741960 | chain_consensus | OK |
+    | 1741960 | builtin | OK |
+    | 1741960 | block_parent | OK |
+    | 1741960 | block_message | OK |
+    | 1741960 | block_header | OK |
+    | 1741960 | actor_state | OK |
+    | 1741960 | actor | OK |
+
+- Watcher Workers (#871)
+  - The `lily watch` command now has the option to specify the number of tipsets that may be indexed in parallel. This can be specified with the `--workers` flag (see `lily watch --help` for details). Note that using large values (greater than 2) will require significant resource to coupe with indexing demands.
+
+- Blockstore and Statestore Caching (#766)
+  - The `lily daemon` command now as the option to use a `blockstore` and/or `statestore` cache. The `blockstore` cache caches values from the lotus blockstore, the `statestore` cache caches values from the lotus statestore. Setting these flags will increase the performance of the lily daemon, but will cause lily to use more memory. Assuming lily is operating on a system with 256 GiB of RAM we recommend the following values: `--blockstore-cache-size=5000000` and `--statestore-cache-size=3000000`. Some tuning will be required to find the values that work best for your deployment.
+
+### Fix
+
+- Gap Find (#884)
+  - Gap find now exists as a single SQL function - requiring a migration to schema version 1.6. This function improves the performance and **accuracy** of the `gap find` command.
+
+- Stateless Indexer (#871)
+  - Lilys indexer is now stateless meaning the error `mismatching current and next tipsets` will no longer happen while indexing tipsets.
+
+- Write Task Errors to Database (#871)
+  - When tasks error their error message is correctly written to the `visor_processing_reports` table.
+
+- Watch is tolerant of chain re-orgs (#871)
+  - The watcher can now correctly watch the chain when a reorg occurs.
+
+- Include job name in TipSetHeight metric (#918)
+  - Allows metric collection on each jobs processing height.
+
+- Prevent lily from running with incompatible schema (#910)
+  - Ensures lily job only execute against correct schema version
+
 <a name="v0.8.8"></a>
 ## [v0.8.8] - 2022-03-11
 

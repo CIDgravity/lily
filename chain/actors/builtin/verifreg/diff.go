@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 
+	cbg "github.com/whyrusleeping/cbor-gen"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-hamt-ipld/v3"
 	"github.com/filecoin-project/go-state-types/abi"
@@ -11,55 +15,59 @@ import (
 	"github.com/filecoin-project/lily/chain/actors/adt/diff"
 	builtin0 "github.com/filecoin-project/specs-actors/actors/builtin"
 	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
-	cbg "github.com/whyrusleeping/cbor-gen"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 )
 
 func DiffVerifiers(ctx context.Context, store adt.Store, pre, cur State) (*VerifierChanges, error) {
 	ctx, span := otel.Tracer("").Start(ctx, "DiffVerifiers")
 	defer span.End()
 
-	prev, err := pre.verifiers()
+	preMap, err := pre.VerifiersMap()
 	if err != nil {
 		return nil, err
 	}
 
-	curv, err := cur.verifiers()
+	curMap, err := cur.VerifiersMap()
 	if err != nil {
 		return nil, err
 	}
-	return diffVerifierMap(ctx, store, pre, cur, prev, curv)
+	return diffVerifierMap(ctx, store, pre, cur, preMap, curMap,
+		&adt.MapOpts{
+			Bitwidth: pre.VerifiersMapBitWidth(),
+			HashFunc: pre.VerifiersMapHashFunction(),
+		},
+		&adt.MapOpts{
+			Bitwidth: cur.VerifiersMapBitWidth(),
+			HashFunc: cur.VerifiersMapHashFunction(),
+		})
 }
 
 func DiffVerifiedClients(ctx context.Context, store adt.Store, pre, cur State) (*VerifierChanges, error) {
 	ctx, span := otel.Tracer("").Start(ctx, "DiffVerifiedClients")
 	defer span.End()
 
-	prec, err := pre.verifiedClients()
+	preMap, err := pre.VerifiedClientsMap()
 	if err != nil {
 		return nil, err
 	}
 
-	curc, err := cur.verifiedClients()
+	curMap, err := cur.VerifiedClientsMap()
 	if err != nil {
 		return nil, err
 	}
-	return diffVerifierMap(ctx, store, pre, cur, prec, curc)
+	return diffVerifierMap(ctx, store, pre, cur, preMap, curMap,
+		&adt.MapOpts{
+			Bitwidth: pre.VerifiedClientsMapBitWidth(),
+			HashFunc: pre.VerifiedClientsMapHashFunction(),
+		},
+		&adt.MapOpts{
+			Bitwidth: cur.VerifiedClientsMapBitWidth(),
+			HashFunc: cur.VerifiedClientsMapHashFunction(),
+		})
 }
 
-func diffVerifierMap(ctx context.Context, store adt.Store, pre, cur State, preM, curM adt.Map) (*VerifierChanges, error) {
+func diffVerifierMap(ctx context.Context, store adt.Store, pre, cur State, preM, curM adt.Map, preOpts, curOpts *adt.MapOpts) (*VerifierChanges, error) {
 	ctx, span := otel.Tracer("").Start(ctx, "diffStates")
 	defer span.End()
-
-	preOpts, err := adt.MapOptsForActorCode(pre.Code())
-	if err != nil {
-		return nil, err
-	}
-	curOpts, err := adt.MapOptsForActorCode(cur.Code())
-	if err != nil {
-		return nil, err
-	}
 
 	diffContainer := NewVerifierDiffContainer(pre, cur)
 	if mapRequiresLegacyDiffing(pre, cur, preOpts, curOpts) {
@@ -90,7 +98,7 @@ func diffVerifierMap(ctx context.Context, store adt.Store, pre, cur State, preM,
 				return nil, err
 			}
 		case hamt.Remove:
-			if err := diffContainer.Add(change.Key, change.Before); err != nil {
+			if err := diffContainer.Remove(change.Key, change.Before); err != nil {
 				return nil, err
 			}
 		}
@@ -128,7 +136,7 @@ func (m *verifierDiffContainer) Add(key string, val *cbg.Deferred) error {
 	}
 	var sp abi.StoragePower
 	if err := sp.UnmarshalCBOR(bytes.NewReader(val.Raw)); err != nil {
-		return nil
+		return err
 	}
 	m.Results.Added = append(m.Results.Added, VerifierInfo{
 		Address: addr,
@@ -170,7 +178,7 @@ func (m *verifierDiffContainer) Remove(key string, val *cbg.Deferred) error {
 	}
 	var sp abi.StoragePower
 	if err := sp.UnmarshalCBOR(bytes.NewReader(val.Raw)); err != nil {
-		return nil
+		return err
 	}
 	m.Results.Removed = append(m.Results.Removed, VerifierInfo{
 		Address: addr,

@@ -3,21 +3,23 @@ package export
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 
-	"github.com/filecoin-project/go-state-types/abi"
-	"github.com/filecoin-project/lotus/chain/types"
+	blockstore "github.com/ipfs/boxo/blockstore"
 	"github.com/ipfs/go-cid"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/ipld/go-car"
 	"github.com/ipld/go-car/util"
 	cbg "github.com/whyrusleeping/cbor-gen"
-	"golang.org/x/xerrors"
 	"gopkg.in/cheggaaa/pb.v1"
+
+	"github.com/filecoin-project/go-state-types/abi"
+
+	"github.com/filecoin-project/lotus/chain/types"
 )
 
-var log = logging.Logger("lily/chain")
+var log = logging.Logger("lily/chain/export")
 
 type ChainExporter struct {
 	store blockstore.Blockstore // blockstore chain is exported from
@@ -90,19 +92,19 @@ func (ce *ChainExporter) Export(ctx context.Context) error {
 		}
 
 		// we haven't visited this cid and its part of a dag, write it to file
-		if err := ce.writeContent(c); err != nil {
+		if err := ce.writeContent(ctx, c); err != nil {
 			return err
 		}
 
 		if kind == BlockHeader {
-			blk, err := ce.store.Get(c)
+			blk, err := ce.store.Get(ctx, c)
 			if err != nil {
 				return err
 			}
 
 			var b types.BlockHeader
 			if err := b.UnmarshalCBOR(bytes.NewBuffer(blk.RawData())); err != nil {
-				return xerrors.Errorf("unmarshaling block header (cid=%s): %w", blk, err)
+				return fmt.Errorf("unmarshaling block header (cid=%s): %w", blk, err)
 			}
 
 			if ce.Config.ShowProcess {
@@ -121,25 +123,25 @@ func (ce *ChainExporter) Export(ctx context.Context) error {
 			// of range.
 			if b.Height == 0 || b.Height > abi.ChainEpoch(ce.Config.MinHeight) {
 				if ce.Config.IncludeMessages {
-					if err := ce.pushNewLinks(b.Messages, todo); err != nil {
+					if err := ce.pushNewLinks(ctx, b.Messages, todo); err != nil {
 						return err
 					}
 				}
 
 				if ce.Config.IncludeReceipts {
-					if err := ce.pushNewLinks(b.ParentMessageReceipts, todo); err != nil {
+					if err := ce.pushNewLinks(ctx, b.ParentMessageReceipts, todo); err != nil {
 						return err
 					}
 				}
 
 				if ce.Config.IncludeStateRoots {
-					if err := ce.pushNewLinks(b.ParentStateRoot, todo); err != nil {
+					if err := ce.pushNewLinks(ctx, b.ParentStateRoot, todo); err != nil {
 						return err
 					}
 				}
 			}
 		} else if kind == Dag {
-			if err := ce.pushNewLinks(c, todo); err != nil {
+			if err := ce.pushNewLinks(ctx, c, todo); err != nil {
 				return err
 			}
 		} else {
@@ -149,9 +151,9 @@ func (ce *ChainExporter) Export(ctx context.Context) error {
 	return nil
 }
 
-func (ce *ChainExporter) pushNewLinks(c cid.Cid, s *Stack) error {
+func (ce *ChainExporter) pushNewLinks(ctx context.Context, c cid.Cid, s *Stack) error {
 	s.Push(c, Dag)
-	data, err := ce.store.Get(c)
+	data, err := ce.store.Get(ctx, c)
 	if err != nil {
 		return err
 	}
@@ -160,8 +162,8 @@ func (ce *ChainExporter) pushNewLinks(c cid.Cid, s *Stack) error {
 	})
 }
 
-func (ce *ChainExporter) writeContent(c cid.Cid) error {
-	blk, err := ce.store.Get(c)
+func (ce *ChainExporter) writeContent(ctx context.Context, c cid.Cid) error {
+	blk, err := ce.store.Get(ctx, c)
 	if err != nil {
 		return err
 	}

@@ -2,16 +2,22 @@
 package verifreg
 
 import (
-	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/go-state-types/abi"
+	"crypto/sha256"
+	"fmt"
+
 	"github.com/ipfs/go-cid"
 
-	"github.com/filecoin-project/lily/chain/actors"
+	"github.com/filecoin-project/go-address"
+	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	verifreg9 "github.com/filecoin-project/go-state-types/builtin/v9/verifreg"
+	"github.com/filecoin-project/go-state-types/manifest"
 	"github.com/filecoin-project/lily/chain/actors/adt"
-
 	builtin5 "github.com/filecoin-project/specs-actors/v5/actors/builtin"
 	verifreg5 "github.com/filecoin-project/specs-actors/v5/actors/builtin/verifreg"
 	adt5 "github.com/filecoin-project/specs-actors/v5/actors/util/adt"
+
+	"github.com/filecoin-project/lotus/chain/actors"
 )
 
 var _ State = (*state5)(nil)
@@ -30,8 +36,61 @@ type state5 struct {
 	store adt.Store
 }
 
+func (s *state5) ActorKey() string {
+	return manifest.VerifregKey
+}
+
+func (s *state5) ActorVersion() actorstypes.Version {
+	return actorstypes.Version5
+}
+
 func (s *state5) Code() cid.Cid {
-	return builtin5.VerifiedRegistryActorCodeID
+	code, ok := actors.GetActorCodeID(s.ActorVersion(), s.ActorKey())
+	if !ok {
+		panic(fmt.Errorf("didn't find actor %v code id for actor version %d", s.ActorKey(), s.ActorVersion()))
+	}
+
+	return code
+}
+
+func (s *state5) VerifiedClientsMapBitWidth() int {
+
+	return builtin5.DefaultHamtBitwidth
+
+}
+
+func (s *state5) VerifiedClientsMapHashFunction() func(input []byte) []byte {
+
+	return func(input []byte) []byte {
+		res := sha256.Sum256(input)
+		return res[:]
+	}
+
+}
+
+func (s *state5) VerifiedClientsMap() (adt.Map, error) {
+
+	return adt5.AsMap(s.store, s.VerifiedClients, builtin5.DefaultHamtBitwidth)
+
+}
+
+func (s *state5) VerifiersMap() (adt.Map, error) {
+	return adt5.AsMap(s.store, s.Verifiers, builtin5.DefaultHamtBitwidth)
+}
+
+func (s *state5) VerifiersMapBitWidth() int {
+
+	return builtin5.DefaultHamtBitwidth
+
+}
+
+func (s *state5) VerifiersMapHashFunction() func(input []byte) []byte {
+
+	return func(input []byte) []byte {
+		res := sha256.Sum256(input)
+		return res[:]
+	}
+
 }
 
 func (s *state5) RootKey() (address.Address, error) {
@@ -39,25 +98,93 @@ func (s *state5) RootKey() (address.Address, error) {
 }
 
 func (s *state5) VerifiedClientDataCap(addr address.Address) (bool, abi.StoragePower, error) {
-	return getDataCap(s.store, actors.Version5, s.verifiedClients, addr)
+
+	return getDataCap(s.store, actorstypes.Version5, s.VerifiedClientsMap, addr)
+
 }
 
 func (s *state5) VerifierDataCap(addr address.Address) (bool, abi.StoragePower, error) {
-	return getDataCap(s.store, actors.Version5, s.verifiers, addr)
+	return getDataCap(s.store, actorstypes.Version5, s.VerifiersMap, addr)
+}
+
+func (s *state5) RemoveDataCapProposalID(verifier address.Address, client address.Address) (bool, uint64, error) {
+	return getRemoveDataCapProposalID(s.store, actorstypes.Version5, s.removeDataCapProposalIDs, verifier, client)
 }
 
 func (s *state5) ForEachVerifier(cb func(addr address.Address, dcap abi.StoragePower) error) error {
-	return forEachCap(s.store, actors.Version5, s.verifiers, cb)
+	return forEachCap(s.store, actorstypes.Version5, s.VerifiersMap, cb)
 }
 
 func (s *state5) ForEachClient(cb func(addr address.Address, dcap abi.StoragePower) error) error {
-	return forEachCap(s.store, actors.Version5, s.verifiedClients, cb)
+
+	return forEachCap(s.store, actorstypes.Version5, s.VerifiedClientsMap, cb)
+
 }
 
-func (s *state5) verifiedClients() (adt.Map, error) {
-	return adt5.AsMap(s.store, s.VerifiedClients, builtin5.DefaultHamtBitwidth)
+func (s *state5) removeDataCapProposalIDs() (adt.Map, error) {
+	return nil, nil
+
 }
 
-func (s *state5) verifiers() (adt.Map, error) {
-	return adt5.AsMap(s.store, s.Verifiers, builtin5.DefaultHamtBitwidth)
+func (s *state5) GetState() interface{} {
+	return &s.State
+}
+
+func (s *state5) GetAllocation(clientIdAddr address.Address, allocationId verifreg9.AllocationId) (*Allocation, bool, error) {
+
+	return nil, false, fmt.Errorf("unsupported in actors v5")
+
+}
+
+func (s *state5) GetAllocations(clientIdAddr address.Address) (map[AllocationId]Allocation, error) {
+
+	return nil, fmt.Errorf("unsupported in actors v5")
+
+}
+
+func (s *state5) GetClaim(providerIdAddr address.Address, claimId verifreg9.ClaimId) (*Claim, bool, error) {
+
+	return nil, false, fmt.Errorf("unsupported in actors v5")
+
+}
+
+func (s *state5) GetClaims(providerIdAddr address.Address) (map[ClaimId]Claim, error) {
+
+	return nil, fmt.Errorf("unsupported in actors v5")
+
+}
+
+func (s *state5) ClaimsMap() (adt.Map, error) {
+
+	return nil, fmt.Errorf("unsupported in actors v5")
+
+}
+
+// TODO this could return an error since not all versions have a claims map
+func (s *state5) ClaimsMapBitWidth() int {
+
+	return builtin5.DefaultHamtBitwidth
+
+}
+
+// TODO this could return an error since not all versions have a claims map
+func (s *state5) ClaimsMapHashFunction() func(input []byte) []byte {
+
+	return func(input []byte) []byte {
+		res := sha256.Sum256(input)
+		return res[:]
+	}
+
+}
+
+func (s *state5) ClaimMapForProvider(providerIdAddr address.Address) (adt.Map, error) {
+
+	return nil, fmt.Errorf("unsupported in actors v5")
+
+}
+
+func (s *state5) getInnerHamtCid(store adt.Store, key abi.Keyer, mapCid cid.Cid, bitwidth int) (cid.Cid, error) {
+
+	return cid.Undef, fmt.Errorf("unsupported in actors v5")
+
 }

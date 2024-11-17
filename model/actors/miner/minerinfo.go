@@ -30,27 +30,22 @@ type MinerInfo struct {
 	SectorSize uint64 `pg:",notnull,use_zero"`
 }
 
-func (m *MinerInfo) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (m *MinerInfo) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, span := otel.Tracer("").Start(ctx, "MinerInfoModel.Persist")
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_infos"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, m)
 }
 
 type MinerInfoList []*MinerInfo
 
-func (ml MinerInfoList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (ml MinerInfoList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, span := otel.Tracer("").Start(ctx, "MinerInfoList.Persist")
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_infos"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(ml) == 0 {
 		return nil

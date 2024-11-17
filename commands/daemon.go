@@ -2,10 +2,28 @@ package commands
 
 import (
 	"context"
-	"io/ioutil"
+	"fmt"
+	"os"
 	"path/filepath"
 
+	"github.com/mitchellh/go-homedir"
+	"github.com/multiformats/go-multiaddr"
+	"github.com/urfave/cli/v2"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
+
 	paramfetch "github.com/filecoin-project/go-paramfetch"
+	"github.com/filecoin-project/lily/chain/indexer/distributed"
+	"github.com/filecoin-project/lily/commands/util"
+	"github.com/filecoin-project/lily/config"
+	"github.com/filecoin-project/lily/lens/lily"
+	"github.com/filecoin-project/lily/lens/lily/modules"
+	lutil "github.com/filecoin-project/lily/lens/util"
+	"github.com/filecoin-project/lily/metrics"
+	"github.com/filecoin-project/lily/schedule"
+	"github.com/filecoin-project/lily/storage"
+	"github.com/filecoin-project/lily/version"
+
 	lotusbuild "github.com/filecoin-project/lotus/build"
 	"github.com/filecoin-project/lotus/chain/events"
 	"github.com/filecoin-project/lotus/chain/stmgr"
@@ -16,45 +34,33 @@ import (
 	lotusmodules "github.com/filecoin-project/lotus/node/modules"
 	"github.com/filecoin-project/lotus/node/modules/dtypes"
 	"github.com/filecoin-project/lotus/node/repo"
-	"github.com/mitchellh/go-homedir"
-	"github.com/multiformats/go-multiaddr"
-	"github.com/urfave/cli/v2"
-	"golang.org/x/xerrors"
-
-	"github.com/filecoin-project/lily/commands/util"
-	"github.com/filecoin-project/lily/config"
-	"github.com/filecoin-project/lily/lens/lily"
-	"github.com/filecoin-project/lily/lens/lily/modules"
-	lutil "github.com/filecoin-project/lily/lens/util"
-	"github.com/filecoin-project/lily/schedule"
-	"github.com/filecoin-project/lily/storage"
 )
 
-var clientAPIFlags struct {
-	apiAddr  string
-	apiToken string
+var ClientAPIFlags struct {
+	APIAddr  string
+	APIToken string
 }
 
-var clientAPIFlag = &cli.StringFlag{
+var ClientAPIFlag = &cli.StringFlag{
 	Name:        "api",
 	Usage:       "Address of lily api in multiaddr format.",
 	EnvVars:     []string{"LILY_API"},
 	Value:       "/ip4/127.0.0.1/tcp/1234",
-	Destination: &clientAPIFlags.apiAddr,
+	Destination: &ClientAPIFlags.APIAddr,
 }
 
-var clientTokenFlag = &cli.StringFlag{
+var ClientTokenFlag = &cli.StringFlag{
 	Name:        "api-token",
 	Usage:       "Authentication token for lily api.",
 	EnvVars:     []string{"LILY_API_TOKEN"},
 	Value:       "",
-	Destination: &clientAPIFlags.apiToken,
+	Destination: &ClientAPIFlags.APIToken,
 }
 
-// clientAPIFlagSet are used by commands that act as clients of a daemon's API
-var clientAPIFlagSet = []cli.Flag{
-	clientAPIFlag,
-	clientTokenFlag,
+// ClientAPIFlagSet are used by commands that act as clients of a daemon's API
+var ClientAPIFlagSet = []cli.Flag{
+	ClientAPIFlag,
+	ClientTokenFlag,
 }
 
 type daemonOpts struct {
@@ -81,7 +87,7 @@ than operating against an external blockstore but requires more disk space and
 memory.
 
 Before starting the daemon for the first time the blockstore must be initialized
-and synchronized. Visor can use a copy of an already synchronized Lotus node
+and synchronized. Lily can use a copy of an already synchronized Lotus node
 repository or can initialize its own empty one and import a snapshot to catch
 up to the chain.
 
@@ -108,7 +114,7 @@ Once the repository is initialized, start the daemon:
 
   lily daemon --repo=<path> --config=<path>/config.toml
 
-Visor will connect to the filecoin network and begin synchronizing with the
+Lily will connect to the filecoin network and begin synchronizing with the
 chain. To check the synchronization status use 'lily sync status' or
 'lily sync wait'.
 
@@ -124,7 +130,7 @@ Note that jobs are not persisted between restarts of the daemon. See
 `,
 
 	Flags: []cli.Flag{
-		clientAPIFlag,
+		ClientAPIFlag,
 		&cli.StringFlag{
 			Name:        "repo",
 			Usage:       "Specify path where lily should store chain state.",
@@ -167,16 +173,16 @@ Note that jobs are not persisted between restarts of the daemon. See
 	Action: func(c *cli.Context) error {
 		lotuslog.SetupLogLevels()
 
-		if err := setupLogging(VisorLogFlags); err != nil {
-			return xerrors.Errorf("setup logging: %w", err)
+		if err := setupLogging(LilyLogFlags); err != nil {
+			return fmt.Errorf("setup logging: %w", err)
 		}
 
-		if err := setupMetrics(VisorMetricFlags); err != nil {
-			return xerrors.Errorf("setup metrics: %w", err)
+		if err := setupMetrics(LilyMetricFlags); err != nil {
+			return fmt.Errorf("setup metrics: %w", err)
 		}
 
-		if err := setupTracing(VisorTracingFlags); err != nil {
-			return xerrors.Errorf("setup tracing: %w", err)
+		if err := setupTracing(LilyTracingFlags); err != nil {
+			return fmt.Errorf("setup tracing: %w", err)
 		}
 
 		ctx := context.Background()
@@ -190,7 +196,7 @@ Note that jobs are not persisted between restarts of the daemon. See
 
 		r, err := repo.NewFS(daemonFlags.repo)
 		if err != nil {
-			return xerrors.Errorf("opening fs repo: %w", err)
+			return fmt.Errorf("opening fs repo: %w", err)
 		}
 
 		if daemonFlags.config == "" {
@@ -204,25 +210,30 @@ Note that jobs are not persisted between restarts of the daemon. See
 			}
 		}
 
+		ctx, _ = tag.New(ctx,
+			tag.Insert(metrics.Version, version.String()),
+		)
+		stats.Record(ctx, metrics.LilyInfo.M(1))
+
 		if err := config.EnsureExists(daemonFlags.config); err != nil {
-			return xerrors.Errorf("ensuring config is present at %q: %w", daemonFlags.config, err)
+			return fmt.Errorf("ensuring config is present at %q: %w", daemonFlags.config, err)
 		}
 		r.SetConfigPath(daemonFlags.config)
 
 		err = r.Init(repo.FullNode)
 		if err != nil && err != repo.ErrRepoExists {
-			return xerrors.Errorf("repo init error: %w", err)
+			return fmt.Errorf("repo init error: %w", err)
 		}
 
 		if err := paramfetch.GetParams(lcli.ReqContext(c), lotusbuild.ParametersJSON(), lotusbuild.SrsJSON(), 0); err != nil {
-			return xerrors.Errorf("fetching proof parameters: %w", err)
+			return fmt.Errorf("fetching proof parameters: %w", err)
 		}
 
 		var genBytes []byte
 		if c.String("genesis") != "" {
-			genBytes, err = ioutil.ReadFile(daemonFlags.genesis)
+			genBytes, err = os.ReadFile(daemonFlags.genesis)
 			if err != nil {
-				return xerrors.Errorf("reading genesis: %w", err)
+				return fmt.Errorf("reading genesis: %w", err)
 			}
 		} else {
 			genBytes = lotusbuild.MaybeGenesis()
@@ -244,6 +255,7 @@ Note that jobs are not persisted between restarts of the daemon. See
 			node.Override(new(*events.Events), modules.NewEvents),
 			node.Override(new(*schedule.Scheduler), schedule.NewSchedulerDaemon),
 			node.Override(new(*storage.Catalog), modules.NewStorageCatalog),
+			node.Override(new(*distributed.Catalog), modules.NewQueueCatalog),
 			node.Override(new(*lutil.CacheConfig), modules.CacheConfig(cacheFlags.BlockstoreCacheSize, cacheFlags.StatestoreCacheSize)),
 			// End Injection
 
@@ -262,26 +274,26 @@ Note that jobs are not persisted between restarts of the daemon. See
 			genesis,
 			liteModeDeps,
 
-			node.ApplyIf(func(s *node.Settings) bool { return c.IsSet("api") },
+			node.ApplyIf(func(_ *node.Settings) bool { return c.IsSet("api") },
 				node.Override(node.SetApiEndpointKey, func(lr repo.LockedRepo) error {
-					apima, err := multiaddr.NewMultiaddr(clientAPIFlags.apiAddr)
+					apima, err := multiaddr.NewMultiaddr(ClientAPIFlags.APIAddr)
 					if err != nil {
 						return err
 					}
 					return lr.SetAPIEndpoint(apima)
 				})),
-			node.ApplyIf(func(s *node.Settings) bool { return !daemonFlags.bootstrap },
+			node.ApplyIf(func(_ *node.Settings) bool { return !daemonFlags.bootstrap },
 				node.Unset(node.RunPeerMgrKey),
 				node.Unset(new(*peermgr.PeerMgr)),
 			),
 		)
 		if err != nil {
-			return xerrors.Errorf("initializing node: %w", err)
+			return fmt.Errorf("initializing node: %w", err)
 		}
 
 		endpoint, err := r.APIEndpoint()
 		if err != nil {
-			return xerrors.Errorf("getting api endpoint: %w", err)
+			return fmt.Errorf("getting api endpoint: %w", err)
 		}
 
 		// TODO: properly parse api endpoint (or make it a URL)

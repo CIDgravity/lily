@@ -3,32 +3,52 @@ package lily
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 
-	"github.com/filecoin-project/go-state-types/abi"
-	"github.com/filecoin-project/lily/lens/lily/modules"
-	"github.com/filecoin-project/lotus/api"
-	"github.com/filecoin-project/lotus/chain/events"
-	"github.com/filecoin-project/lotus/chain/stmgr"
-	"github.com/filecoin-project/lotus/chain/types"
-	"github.com/filecoin-project/lotus/node/impl/common"
-	"github.com/filecoin-project/lotus/node/impl/full"
-	"github.com/filecoin-project/lotus/node/impl/net"
-	"github.com/filecoin-project/specs-actors/actors/util/adt"
 	"github.com/go-pg/pg/v10"
 	"github.com/ipfs/go-cid"
+	ipld "github.com/ipfs/go-ipld-format"
 	logging "github.com/ipfs/go-log/v2"
+	"github.com/libp2p/go-libp2p/core/host"
 	"go.uber.org/fx"
-	"golang.org/x/xerrors"
 
-	"github.com/filecoin-project/lily/chain"
+	"github.com/filecoin-project/go-address"
+	"github.com/filecoin-project/go-state-types/abi"
+	"github.com/filecoin-project/go-state-types/exitcode"
+	network2 "github.com/filecoin-project/go-state-types/network"
+	"github.com/filecoin-project/lily/chain/datasource"
+	"github.com/filecoin-project/lily/chain/gap"
+	"github.com/filecoin-project/lily/chain/indexer"
+	"github.com/filecoin-project/lily/chain/indexer/distributed"
+	"github.com/filecoin-project/lily/chain/indexer/distributed/queue"
+	"github.com/filecoin-project/lily/chain/indexer/distributed/queue/tasks"
+	"github.com/filecoin-project/lily/chain/indexer/integrated"
+	"github.com/filecoin-project/lily/chain/indexer/integrated/tipset"
+	"github.com/filecoin-project/lily/chain/walk"
+	"github.com/filecoin-project/lily/chain/watch"
 	"github.com/filecoin-project/lily/lens"
+	"github.com/filecoin-project/lily/lens/lily/modules"
 	"github.com/filecoin-project/lily/lens/util"
 	"github.com/filecoin-project/lily/network"
 	"github.com/filecoin-project/lily/schedule"
 	"github.com/filecoin-project/lily/storage"
+	"github.com/filecoin-project/specs-actors/actors/util/adt"
+
+	"github.com/filecoin-project/lotus/api"
+	"github.com/filecoin-project/lotus/chain/consensus"
+	"github.com/filecoin-project/lotus/chain/events"
+	"github.com/filecoin-project/lotus/chain/state"
+	"github.com/filecoin-project/lotus/chain/stmgr"
+	"github.com/filecoin-project/lotus/chain/types"
+	"github.com/filecoin-project/lotus/chain/types/ethtypes"
+	"github.com/filecoin-project/lotus/chain/vm"
+	"github.com/filecoin-project/lotus/node/impl/common"
+	"github.com/filecoin-project/lotus/node/impl/full"
+	"github.com/filecoin-project/lotus/node/impl/net"
 )
 
+var _ lens.API = (*LilyNodeAPI)(nil)
 var _ LilyAPI = (*LilyNodeAPI)(nil)
 
 type LilyNodeAPI struct {
@@ -38,27 +58,141 @@ type LilyNodeAPI struct {
 	full.ChainAPI
 	full.StateAPI
 	full.SyncAPI
+	full.EthModuleAPI
+	full.ActorEventAPI
 	common.CommonAPI
-	Events         *events.Events
-	Scheduler      *schedule.Scheduler
+	Events    *events.Events
+	Scheduler *schedule.Scheduler
+
+	ExecMonitor stmgr.ExecMonitor
+	CacheConfig *util.CacheConfig
+
 	StorageCatalog *storage.Catalog
-	ExecMonitor    stmgr.ExecMonitor
-	CacheConfig    *util.CacheConfig
+	QueueCatalog   *distributed.Catalog
+
 	actorStore     adt.Store
 	actorStoreInit sync.Once
 }
 
-func (m *LilyNodeAPI) ChainGetTipSetAfterHeight(ctx context.Context, epoch abi.ChainEpoch, key types.TipSetKey) (*types.TipSet, error) {
-	// TODO (Frrist): I copied this from lotus, I need it now to handle gap filling edge cases.
-	ts, err := m.ChainAPI.Chain.GetTipSetFromKey(key)
-	if err != nil {
-		return nil, xerrors.Errorf("loading tipset %s: %w", key, err)
-	}
-	return m.ChainAPI.Chain.GetTipsetByHeight(ctx, epoch, ts, false)
+func (m *LilyNodeAPI) Host() host.Host {
+	return m.RawHost
 }
 
-func (m *LilyNodeAPI) Daemonized() bool {
-	return true
+func (m *LilyNodeAPI) StartTipSetWorker(_ context.Context, cfg *LilyTipSetWorkerConfig) (*schedule.JobSubmitResult, error) {
+	ctx := context.Background()
+	log.Infow("starting TipSetWorker", "name", cfg.JobConfig.Name)
+	md := storage.Metadata{
+		JobName: cfg.JobConfig.Name,
+	}
+
+	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
+	strg, err := m.StorageCatalog.Connect(ctx, cfg.JobConfig.Storage, md)
+	if err != nil {
+		return nil, err
+	}
+
+	worker, err := m.QueueCatalog.Worker(cfg.Queue)
+	if err != nil {
+		return nil, err
+	}
+
+	taskAPI, err := datasource.NewDataSource(m)
+	if err != nil {
+		return nil, err
+	}
+
+	im, err := integrated.NewManager(strg, tipset.NewBuilder(taskAPI, cfg.JobConfig.Name))
+	if err != nil {
+		return nil, err
+	}
+
+	handlers := []queue.TaskHandler{tasks.NewIndexHandler(im)}
+	// check if queue config contains configuration for gap fill tasks and if it expects the tasks to be processed. This
+	// is specified by giving the Fill queue a priority greater than 1.
+	priority, ok := worker.ServerConfig.Queues[indexer.Fill.String()]
+	if ok {
+		if priority > 0 {
+			// if gap fill tasks have a priority storage must be a database.
+			db, ok := strg.(*storage.Database)
+			if !ok {
+				return nil, fmt.Errorf("storage type (%T) is unsupported when %s queue is enable", strg, indexer.Fill.String())
+			}
+			//  add gap fill handler to set of worker handlers.
+			handlers = append(handlers, tasks.NewGapFillHandler(im, db))
+		}
+	}
+
+	res := m.Scheduler.Submit(&schedule.JobConfig{
+		Name: cfg.JobConfig.Name,
+		Type: "tipset-worker",
+		Params: map[string]string{
+			"queue":   cfg.Queue,
+			"storage": cfg.JobConfig.Storage,
+		},
+		Job:                 queue.NewAsynqWorker(cfg.JobConfig.Name, worker, handlers...),
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
+	})
+	return res, nil
+}
+
+func (m *LilyNodeAPI) LilyIndex(_ context.Context, cfg *LilyIndexConfig) (interface{}, error) {
+	md := storage.Metadata{
+		JobName: cfg.JobConfig.Name,
+	}
+	// the context's passed to these methods live for the duration of the clients request, so make a new one.
+	ctx := context.Background()
+
+	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
+	strg, err := m.StorageCatalog.Connect(ctx, cfg.JobConfig.Storage, md)
+	if err != nil {
+		return nil, err
+	}
+
+	taskAPI, err := datasource.NewDataSource(m)
+	if err != nil {
+		return nil, err
+	}
+
+	// instantiate an indexer to extract block, message, and actor state data from observed tipsets and persists it to the storage.
+	im, err := integrated.NewManager(strg, tipset.NewBuilder(taskAPI, cfg.JobConfig.Name), integrated.WithWindow(cfg.JobConfig.Window))
+	if err != nil {
+		return nil, err
+	}
+
+	ts, err := m.ChainGetTipSet(ctx, cfg.TipSet)
+	if err != nil {
+		return nil, err
+	}
+
+	success, err := im.TipSet(ctx, ts, indexer.WithTasks(cfg.JobConfig.Tasks))
+
+	return success, err
+}
+
+func (m *LilyNodeAPI) LilyIndexNotify(_ context.Context, cfg *LilyIndexNotifyConfig) (interface{}, error) {
+	// the context's passed to these methods live for the duration of the clients request, so make a new one.
+	ctx := context.Background()
+
+	notifier, err := m.QueueCatalog.Notifier(cfg.Queue)
+	if err != nil {
+		return nil, err
+	}
+
+	ts, err := m.ChainGetTipSet(ctx, cfg.IndexConfig.TipSet)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := distributed.NewTipSetIndexer(queue.NewAsynq(notifier))
+
+	return idx.TipSet(ctx, ts, indexer.WithIndexerType(indexer.Index), indexer.WithTasks(cfg.IndexConfig.JobConfig.Tasks))
+}
+
+type watcherAPIWrapper struct {
+	*events.Events
+	full.ChainModuleAPI
 }
 
 func (m *LilyNodeAPI) LilyWatch(_ context.Context, cfg *LilyWatchConfig) (*schedule.JobSubmitResult, error) {
@@ -66,54 +200,98 @@ func (m *LilyNodeAPI) LilyWatch(_ context.Context, cfg *LilyWatchConfig) (*sched
 	ctx := context.Background()
 
 	md := storage.Metadata{
-		JobName: cfg.Name,
+		JobName: cfg.JobConfig.Name,
+	}
+
+	wapi := &watcherAPIWrapper{
+		Events:         m.Events,
+		ChainModuleAPI: m.ChainModuleAPI,
 	}
 
 	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
-	strg, err := m.StorageCatalog.Connect(ctx, cfg.Storage, md)
+	strg, err := m.StorageCatalog.Connect(ctx, cfg.JobConfig.Storage, md)
+	if err != nil {
+		return nil, err
+	}
+
+	taskAPI, err := datasource.NewDataSource(m)
 	if err != nil {
 		return nil, err
 	}
 
 	// instantiate an indexer to extract block, message, and actor state data from observed tipsets and persists it to the storage.
-	indexer, err := chain.NewTipSetIndexer(m, strg, cfg.Window, cfg.Name, cfg.Tasks)
+	idx, err := integrated.NewManager(strg, tipset.NewBuilder(taskAPI, cfg.JobConfig.Name), integrated.WithWindow(cfg.JobConfig.Window))
 	if err != nil {
 		return nil, err
 	}
 
-	// HeadNotifier bridges between the event system and the watcher
-	obs := &HeadNotifier{
-		bufferSize: 5,
-	}
-
-	// Hook up the notifier to the event system
-	head := m.Events.Observe(obs)
-	if err := obs.SetCurrent(ctx, head); err != nil {
-		return nil, err
-	}
-
-	// warm the tipset cache.
-	tsCache := chain.NewTipSetCache(cfg.Confidence)
-	if err := tsCache.Warm(ctx, head, m.ChainModuleAPI.ChainGetTipSet); err != nil {
-		return nil, err
-	}
-
-	res := m.Scheduler.Submit(&schedule.JobConfig{
-		Name: cfg.Name,
+	reporter := &schedule.Reporter{}
+	watchJob := watch.NewWatcher(wapi, idx, cfg.JobConfig.Name,
+		reporter,
+		watch.WithTasks(cfg.JobConfig.Tasks...),
+		watch.WithConfidence(cfg.Confidence),
+		watch.WithConcurrentWorkers(cfg.Workers),
+		watch.WithBufferSize(cfg.BufferSize),
+		watch.WithInterval(cfg.Interval),
+	)
+	jobConfig := &schedule.JobConfig{
+		Name: cfg.JobConfig.Name,
 		Type: "watch",
 		Params: map[string]string{
-			"window":     cfg.Window.String(),
-			"confidence": fmt.Sprintf("%d", cfg.Confidence),
-			"storage":    cfg.Storage,
+			"window":     cfg.JobConfig.Window.String(),
+			"storage":    cfg.JobConfig.Storage,
+			"confidence": strconv.Itoa(cfg.Confidence),
+			"worker":     strconv.Itoa(cfg.Workers),
+			"buffer":     strconv.Itoa(cfg.BufferSize),
+			"interval":   strconv.Itoa(cfg.Interval),
 		},
-		Tasks:               cfg.Tasks,
-		Job:                 chain.NewWatcher(indexer, obs, tsCache),
-		RestartOnFailure:    cfg.RestartOnFailure,
-		RestartOnCompletion: cfg.RestartOnCompletion,
-		RestartDelay:        cfg.RestartDelay,
-	})
+		Tasks:               cfg.JobConfig.Tasks,
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
+		Job:                 watchJob,
+		Reporter:            reporter,
+	}
 
+	res := m.Scheduler.Submit(jobConfig)
 	return res, nil
+}
+
+func (m *LilyNodeAPI) LilyWatchNotify(_ context.Context, cfg *LilyWatchNotifyConfig) (*schedule.JobSubmitResult, error) {
+	wapi := &watcherAPIWrapper{
+		Events:         m.Events,
+		ChainModuleAPI: m.ChainModuleAPI,
+	}
+
+	notifier, err := m.QueueCatalog.Notifier(cfg.Queue)
+	if err != nil {
+		return nil, err
+	}
+	idx := distributed.NewTipSetIndexer(queue.NewAsynq(notifier))
+	reporter := &schedule.Reporter{}
+	watchJob := watch.NewWatcher(wapi, idx, cfg.JobConfig.Name,
+		reporter,
+		watch.WithTasks(cfg.JobConfig.Tasks...),
+		watch.WithConfidence(cfg.Confidence),
+		watch.WithBufferSize(cfg.BufferSize),
+	)
+	jobConfig := &schedule.JobConfig{
+		Name: cfg.JobConfig.Name,
+		Type: "watch-notify",
+		Params: map[string]string{
+			"confidence": strconv.Itoa(cfg.Confidence),
+			"buffer":     strconv.Itoa(cfg.BufferSize),
+			"queue":      cfg.Queue,
+		},
+		Tasks:               cfg.JobConfig.Tasks,
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
+		Job:                 watchJob,
+		Reporter:            reporter,
+	}
+	res := m.Scheduler.Submit(jobConfig)
+	return res, err
 }
 
 func (m *LilyNodeAPI) LilyWalk(_ context.Context, cfg *LilyWalkConfig) (*schedule.JobSubmitResult, error) {
@@ -121,37 +299,72 @@ func (m *LilyNodeAPI) LilyWalk(_ context.Context, cfg *LilyWalkConfig) (*schedul
 	ctx := context.Background()
 
 	md := storage.Metadata{
-		JobName: cfg.Name,
+		JobName: cfg.JobConfig.Name,
 	}
 
 	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
-	strg, err := m.StorageCatalog.Connect(ctx, cfg.Storage, md)
+	strg, err := m.StorageCatalog.Connect(ctx, cfg.JobConfig.Storage, md)
+	if err != nil {
+		return nil, err
+	}
+
+	taskAPI, err := datasource.NewDataSource(m)
 	if err != nil {
 		return nil, err
 	}
 
 	// instantiate an indexer to extract block, message, and actor state data from observed tipsets and persists it to the storage.
-	indexer, err := chain.NewTipSetIndexer(m, strg, cfg.Window, cfg.Name, cfg.Tasks)
+	idx, err := integrated.NewManager(strg, tipset.NewBuilder(taskAPI, cfg.JobConfig.Name), integrated.WithWindow(cfg.JobConfig.Window))
 	if err != nil {
 		return nil, err
 	}
 
-	res := m.Scheduler.Submit(&schedule.JobConfig{
-		Name: cfg.Name,
+	reporter := &schedule.Reporter{}
+	jobConfig := &schedule.JobConfig{
+		Name: cfg.JobConfig.Name,
 		Type: "walk",
 		Params: map[string]string{
-			"window":    cfg.Window.String(),
+			"window":    cfg.JobConfig.Window.String(),
 			"minHeight": fmt.Sprintf("%d", cfg.From),
 			"maxHeight": fmt.Sprintf("%d", cfg.To),
-			"storage":   cfg.Storage,
+			"storage":   cfg.JobConfig.Storage,
 		},
-		Tasks:               cfg.Tasks,
-		Job:                 chain.NewWalker(indexer, m, cfg.From, cfg.To),
-		RestartOnFailure:    cfg.RestartOnFailure,
-		RestartOnCompletion: cfg.RestartOnCompletion,
-		RestartDelay:        cfg.RestartDelay,
-	})
+		Tasks:               cfg.JobConfig.Tasks,
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
+		Job:                 walk.NewWalker(idx, m, cfg.JobConfig.Name, cfg.JobConfig.Tasks, cfg.From, cfg.To, reporter, cfg.JobConfig.StopOnError, cfg.Interval),
+		Reporter:            reporter,
+	}
 
+	res := m.Scheduler.Submit(jobConfig)
+	return res, nil
+}
+
+func (m *LilyNodeAPI) LilyWalkNotify(_ context.Context, cfg *LilyWalkNotifyConfig) (*schedule.JobSubmitResult, error) {
+	notifier, err := m.QueueCatalog.Notifier(cfg.Queue)
+	if err != nil {
+		return nil, err
+	}
+	idx := distributed.NewTipSetIndexer(queue.NewAsynq(notifier))
+
+	reporter := &schedule.Reporter{}
+	jobConfig := &schedule.JobConfig{
+		Name: cfg.WalkConfig.JobConfig.Name,
+		Type: "walk-notify",
+		Params: map[string]string{
+			"minHeight": fmt.Sprintf("%d", cfg.WalkConfig.From),
+			"maxHeight": fmt.Sprintf("%d", cfg.WalkConfig.To),
+			"queue":     cfg.Queue,
+		},
+		Tasks:               cfg.WalkConfig.JobConfig.Tasks,
+		RestartOnFailure:    cfg.WalkConfig.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.WalkConfig.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.WalkConfig.JobConfig.RestartDelay,
+		Job:                 walk.NewWalker(idx, m, cfg.WalkConfig.JobConfig.Name, cfg.WalkConfig.JobConfig.Tasks, cfg.WalkConfig.From, cfg.WalkConfig.To, reporter, cfg.WalkConfig.JobConfig.StopOnError, cfg.WalkConfig.Interval),
+		Reporter:            reporter,
+	}
+	res := m.Scheduler.Submit(jobConfig)
 	return res, nil
 }
 
@@ -160,28 +373,28 @@ func (m *LilyNodeAPI) LilyGapFind(_ context.Context, cfg *LilyGapFindConfig) (*s
 	ctx := context.Background()
 
 	md := storage.Metadata{
-		JobName: cfg.Name,
+		JobName: cfg.JobConfig.Name,
 	}
 
 	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
-	db, err := m.StorageCatalog.ConnectAsDatabase(ctx, cfg.Storage, md)
+	db, err := m.StorageCatalog.ConnectAsDatabase(ctx, cfg.JobConfig.Storage, md)
 	if err != nil {
 		return nil, err
 	}
 
 	res := m.Scheduler.Submit(&schedule.JobConfig{
-		Name:  cfg.Name,
-		Type:  "Find",
-		Tasks: cfg.Tasks,
+		Name:  cfg.JobConfig.Name,
+		Type:  "find",
+		Tasks: cfg.JobConfig.Tasks,
 		Params: map[string]string{
 			"minHeight": fmt.Sprintf("%d", cfg.From),
 			"maxHeight": fmt.Sprintf("%d", cfg.To),
-			"storage":   cfg.Storage,
+			"storage":   cfg.JobConfig.Storage,
 		},
-		Job:                 chain.NewGapIndexer(m, db, cfg.Name, cfg.From, cfg.To, cfg.Tasks),
-		RestartOnFailure:    cfg.RestartOnFailure,
-		RestartOnCompletion: cfg.RestartOnCompletion,
-		RestartDelay:        cfg.RestartDelay,
+		Job:                 gap.NewFinder(m, db, cfg.JobConfig.Name, cfg.From, cfg.To, cfg.JobConfig.Tasks),
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
 	})
 
 	return res, nil
@@ -192,49 +405,83 @@ func (m *LilyNodeAPI) LilyGapFill(_ context.Context, cfg *LilyGapFillConfig) (*s
 	ctx := context.Background()
 
 	md := storage.Metadata{
-		JobName: cfg.Name,
+		JobName: cfg.JobConfig.Name,
 	}
 
 	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
-	db, err := m.StorageCatalog.ConnectAsDatabase(ctx, cfg.Storage, md)
+	db, err := m.StorageCatalog.ConnectAsDatabase(ctx, cfg.JobConfig.Storage, md)
+	if err != nil {
+		return nil, err
+	}
+	reporter := &schedule.Reporter{}
+	jobConfig := &schedule.JobConfig{
+		Name: cfg.JobConfig.Name,
+		Type: "fill",
+		Params: map[string]string{
+			"minHeight": fmt.Sprintf("%d", cfg.From),
+			"maxHeight": fmt.Sprintf("%d", cfg.To),
+			"storage":   cfg.JobConfig.Storage,
+		},
+		Tasks:               cfg.JobConfig.Tasks,
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
+		Reporter:            reporter,
+		Job:                 gap.NewFiller(m, db, cfg.JobConfig.Name, cfg.From, cfg.To, cfg.JobConfig.Tasks, reporter),
+	}
+	res := m.Scheduler.Submit(jobConfig)
+	return res, nil
+}
+
+func (m *LilyNodeAPI) LilyGapFillNotify(_ context.Context, cfg *LilyGapFillNotifyConfig) (*schedule.JobSubmitResult, error) {
+	// the context's passed to these methods live for the duration of the clients request, so make a new one.
+	ctx := context.Background()
+
+	md := storage.Metadata{
+		JobName: cfg.GapFillConfig.JobConfig.Name,
+	}
+
+	notifier, err := m.QueueCatalog.Notifier(cfg.Queue)
 	if err != nil {
 		return nil, err
 	}
 
+	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
+	db, err := m.StorageCatalog.ConnectAsDatabase(ctx, cfg.GapFillConfig.JobConfig.Storage, md)
+	if err != nil {
+		return nil, err
+	}
 	res := m.Scheduler.Submit(&schedule.JobConfig{
-		Name: cfg.Name,
-		Type: "Fill",
+		Name: cfg.GapFillConfig.JobConfig.Name,
+		Type: "fill-notify",
 		Params: map[string]string{
-			"minHeight": fmt.Sprintf("%d", cfg.From),
-			"maxHeight": fmt.Sprintf("%d", cfg.To),
-			"storage":   cfg.Storage,
+			"minHeight": fmt.Sprintf("%d", cfg.GapFillConfig.From),
+			"maxHeight": fmt.Sprintf("%d", cfg.GapFillConfig.To),
+			"storage":   cfg.GapFillConfig.JobConfig.Storage,
+			"queue":     cfg.Queue,
 		},
-		Tasks:               cfg.Tasks,
-		Job:                 chain.NewGapFiller(m, db, cfg.Name, cfg.From, cfg.To, cfg.Tasks),
-		RestartOnFailure:    cfg.RestartOnFailure,
-		RestartOnCompletion: cfg.RestartOnCompletion,
-		RestartDelay:        cfg.RestartDelay,
+		Tasks:               cfg.GapFillConfig.JobConfig.Tasks,
+		Job:                 gap.NewNotifier(m, db, queue.NewAsynq(notifier), cfg.GapFillConfig.JobConfig.Name, cfg.GapFillConfig.From, cfg.GapFillConfig.To, cfg.GapFillConfig.JobConfig.Tasks),
+		RestartOnFailure:    cfg.GapFillConfig.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.GapFillConfig.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.GapFillConfig.JobConfig.RestartDelay,
 	})
 
 	return res, nil
 }
 
 func (m *LilyNodeAPI) LilyJobStart(_ context.Context, ID schedule.JobID) error {
-	if err := m.Scheduler.StartJob(ID); err != nil {
-		return err
-	}
-	return nil
+	err := m.Scheduler.StartJob(ID)
+	return err
 }
 
 func (m *LilyNodeAPI) LilyJobStop(_ context.Context, ID schedule.JobID) error {
-	if err := m.Scheduler.StopJob(ID); err != nil {
-		return err
-	}
-	return nil
+	err := m.Scheduler.StopJob(ID)
+	return err
 }
 
 func (m *LilyNodeAPI) LilyJobWait(ctx context.Context, ID schedule.JobID) (*schedule.JobListResult, error) {
-	res, err := m.Scheduler.WaitJob(ID)
+	res, err := m.Scheduler.WaitJob(ctx, ID)
 	if err != nil {
 		return nil, err
 	}
@@ -243,10 +490,6 @@ func (m *LilyNodeAPI) LilyJobWait(ctx context.Context, ID schedule.JobID) (*sche
 
 func (m *LilyNodeAPI) LilyJobList(_ context.Context) ([]schedule.JobListResult, error) {
 	return m.Scheduler.Jobs(), nil
-}
-
-func (m *LilyNodeAPI) GetExecutedAndBlockMessagesForTipset(ctx context.Context, ts, pts *types.TipSet) (*lens.TipSetMessages, error) {
-	return util.GetExecutedAndBlockMessagesForTipset(ctx, m.ChainAPI.Chain, m.StateManager, ts, pts)
 }
 
 func (m *LilyNodeAPI) GetMessageExecutionsForTipSet(ctx context.Context, next *types.TipSet, current *types.TipSet) ([]*lens.MessageExecution, error) {
@@ -260,39 +503,39 @@ func (m *LilyNodeAPI) GetMessageExecutionsForTipSet(ctx context.Context, next *t
 	// contain executions for this tipset.
 	executions, err := msgMonitor.ExecutionFor(current)
 	if err != nil {
-		if err == modules.ExecutionTraceNotFound {
+		if err == modules.ErrExecutionTraceNotFound {
 			// if lily hasn't watched this tipset be applied then we need to compute its execution trace.
 			// this will likely be the case for most walk tasks.
 			_, err := m.StateManager.ExecutionTraceWithMonitor(ctx, current, msgMonitor)
 			if err != nil {
-				return nil, xerrors.Errorf("failed to compute execution trace for tipset %s: %w", current.Key().String(), err)
+				return nil, fmt.Errorf("failed to compute execution trace for tipset %s: %w", current.Key().String(), err)
 			}
 			// the above call will populate the msgMonitor with an execution trace for this tipset, get it.
 			executions, err = msgMonitor.ExecutionFor(current)
 			if err != nil {
-				return nil, xerrors.Errorf("failed to find execution trace for tipset %s: %w", current.Key().String(), err)
+				return nil, fmt.Errorf("failed to find execution trace for tipset %s: %w", current.Key().String(), err)
 			}
 		} else {
-			return nil, xerrors.Errorf("failed to extract message execution for tipset %s: %w", next, err)
+			return nil, fmt.Errorf("failed to extract message execution for tipset %s: %w", next, err)
 		}
 	}
 
 	getActorCode, err := util.MakeGetActorCodeFunc(ctx, m.ChainAPI.Chain.ActorStore(ctx), next, current)
 	if err != nil {
-		return nil, xerrors.Errorf("failed to make actor code query function: %w", err)
+		return nil, fmt.Errorf("failed to make actor code query function: %w", err)
 	}
 
 	out := make([]*lens.MessageExecution, len(executions))
 	for idx, execution := range executions {
-		toCode, found := getActorCode(execution.Msg.To)
+		toCode, found := getActorCode(ctx, execution.Msg.To)
 		// if the message failed to execute due to lack of gas then the TO actor may never have been created.
 		if !found {
 			log.Warnw("failed to find TO actor", "height", next.Height().String(), "message", execution.Msg.Cid().String(), "actor", execution.Msg.To.String())
 		}
 		// if the message sender cannot be found this is an unexpected error
-		fromCode, found := getActorCode(execution.Msg.From)
+		fromCode, found := getActorCode(ctx, execution.Msg.From)
 		if !found {
-			return nil, xerrors.Errorf("failed to find from actor %s height %d message %s", execution.Msg.From, execution.TipSet.Height(), execution.Msg.Cid())
+			return nil, fmt.Errorf("failed to find from actor %s height %d message %s", execution.Msg.From, execution.TipSet.Height(), execution.Msg.Cid())
 		}
 		out[idx] = &lens.MessageExecution{
 			Cid:           execution.Mcid,
@@ -306,6 +549,236 @@ func (m *LilyNodeAPI) GetMessageExecutionsForTipSet(ctx context.Context, next *t
 		}
 	}
 	return out, nil
+}
+
+// ComputeBaseFee calculates the base-fee of the specified tipset.
+func (m *LilyNodeAPI) ComputeBaseFee(ctx context.Context, ts *types.TipSet) (abi.TokenAmount, error) {
+	return m.ChainAPI.Chain.ComputeBaseFee(ctx, ts)
+}
+
+func (m *LilyNodeAPI) EthGetBlockByHash(ctx context.Context, blkHash ethtypes.EthHash, fullTxInfo bool) (ethtypes.EthBlock, error) {
+	return m.EthModuleAPI.EthGetBlockByHash(ctx, blkHash, fullTxInfo)
+}
+
+func (m *LilyNodeAPI) EthGetTransactionByHash(ctx context.Context, txHash *ethtypes.EthHash) (*ethtypes.EthTx, error) {
+	return m.EthModuleAPI.EthGetTransactionByHash(ctx, txHash)
+}
+
+func (m *LilyNodeAPI) EthGetTransactionReceipt(ctx context.Context, txHash ethtypes.EthHash) (*api.EthTxReceipt, error) {
+	return m.EthModuleAPI.EthGetTransactionReceipt(ctx, txHash)
+}
+
+func (m *LilyNodeAPI) ChainGetMessagesInTipset(ctx context.Context, tsk types.TipSetKey) ([]api.Message, error) {
+	return m.ChainAPI.ChainGetMessagesInTipset(ctx, tsk)
+}
+
+func (m *LilyNodeAPI) StateListActors(ctx context.Context, tsk types.TipSetKey) ([]address.Address, error) {
+	return m.StateAPI.StateListActors(ctx, tsk)
+}
+
+func (m *LilyNodeAPI) GetActorEventsRaw(ctx context.Context, filter *types.ActorEventFilter) ([]*types.ActorEvent, error) {
+	return m.ActorEventAPI.GetActorEventsRaw(ctx, filter)
+}
+
+// MessagesForTipSetBlocks returns messages stored in the blocks of the specified tipset, messages may be duplicated
+// across the returned set of BlockMessages.
+func (m *LilyNodeAPI) MessagesForTipSetBlocks(ctx context.Context, ts *types.TipSet) ([]*lens.BlockMessages, error) {
+	var out []*lens.BlockMessages
+	for _, blk := range ts.Blocks() {
+		blkMsgs, err := m.ChainAPI.ChainModuleAPI.ChainGetBlockMessages(ctx, blk.Cid())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &lens.BlockMessages{
+			Block:        blk,
+			BlsMessages:  blkMsgs.BlsMessages,
+			SecpMessages: blkMsgs.SecpkMessages,
+		})
+	}
+	return out, nil
+}
+
+func (m *LilyNodeAPI) MessagesWithDeduplicationForTipSet(ctx context.Context, ts *types.TipSet) (map[cid.Cid]types.ChainMsg, error) {
+	blkMsgs, err := m.ChainAPI.Chain.BlockMsgsForTipset(ctx, ts)
+	msgMap := make(map[cid.Cid]types.ChainMsg)
+	if err != nil {
+		return msgMap, err
+	}
+	for _, blk := range blkMsgs {
+		for _, msg := range blk.BlsMessages {
+			msgMap[msg.Cid()] = msg
+		}
+		for _, msg := range blk.SecpkMessages {
+			msgMap[msg.Cid()] = msg
+		}
+	}
+
+	return msgMap, nil
+}
+
+// TipSetMessageReceipts returns the blocks and messages in `pts` and their corresponding receipts from `ts` matching block order in tipset (`pts`).
+func (m *LilyNodeAPI) TipSetMessageReceipts(ctx context.Context, ts, pts *types.TipSet) ([]*lens.BlockMessageReceipts, error) {
+	// sanity check args
+	if ts.Key().IsEmpty() {
+		return nil, fmt.Errorf("tipset cannot be empty")
+	}
+	if pts.Key().IsEmpty() {
+		return nil, fmt.Errorf("parent tipset cannot be empty")
+	}
+	if !types.CidArrsEqual(ts.Parents().Cids(), pts.Cids()) {
+		return nil, fmt.Errorf("mismatching tipset (%s) and parent tipset (%s)", ts.Key().String(), pts.Key().String())
+	}
+	// returned BlockMessages match block order in tipset
+	blkMsgs, err := m.ChainAPI.Chain.BlockMsgsForTipset(ctx, pts)
+	if err != nil {
+		return nil, err
+	}
+	if len(blkMsgs) != len(pts.Blocks()) {
+		// logic error somewhere
+		return nil, fmt.Errorf("mismatching number of blocks returned from block messages, got %d wanted %d", len(blkMsgs), len(pts.Blocks()))
+	}
+
+	// retrieve receipts using a block from the child (ts) tipset
+	rs, err := adt.AsArray(m.Store(), ts.Blocks()[0].ParentMessageReceipts)
+	if err != nil {
+		// if we fail to find the receipts then we need to compute them, which we can safely do since the above `BlockMsgsForTipset` call
+		// returning successfully indicates we have the message available to compute receipts from.
+		if ipld.IsNotFound(err) {
+			log.Debugw("computing tipset to get receipts", "ts", pts.Key().String(), "height", pts.Height())
+			if stateRoot, receiptRoot, err := m.StateManager.TipSetState(ctx, pts); err != nil {
+				log.Errorw("failed to compute tipset state", "tipset", pts.Key().String(), "height", pts.Height())
+				return nil, err
+			} else if !stateRoot.Equals(ts.ParentState()) { // sanity check
+				return nil, fmt.Errorf("computed stateroot (%s) does not match tipset stateroot (%s)", stateRoot.String(), ts.ParentState().String())
+			} else if !receiptRoot.Equals(ts.Blocks()[0].ParentMessageReceipts) { // sanity check
+				return nil, fmt.Errorf("computed receipts (%s) does not match tipset block parent message receipts (%s)", receiptRoot.String(), ts.Blocks()[0].ParentMessageReceipts.String())
+			}
+			// loading after computing state should succeed as tipset computation produces message receipts
+			rs, err = adt.AsArray(m.Store(), ts.Blocks()[0].ParentMessageReceipts)
+			if err != nil {
+				return nil, fmt.Errorf("load message receipts after tipset execution (something if very wrong contact a developer): %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("loading message receipts %w", err)
+		}
+	}
+	// so we only load the receipt array once
+	getReceipt := func(idx int) (*types.MessageReceipt, error) {
+		var r types.MessageReceipt
+		if found, err := rs.Get(uint64(idx), &r); err != nil {
+			return nil, err
+		} else if !found {
+			return nil, fmt.Errorf("failed to find receipt %d", idx)
+		}
+		return &r, nil
+	}
+
+	out := make([]*lens.BlockMessageReceipts, len(pts.Blocks()))
+	executionIndex := 0
+	// walk each block in tipset, `pts.Blocks()` has same ordering as `blkMsgs`.
+	for blkIdx := range pts.Blocks() {
+		// bls and secp messages for block
+		msgs := blkMsgs[blkIdx]
+		// index of messages in `out.Messages`
+		msgIdx := 0
+		// index or receipts in `out.Receipts`
+		receiptIdx := 0
+		out[blkIdx] = &lens.BlockMessageReceipts{
+			// block containing messages
+			Block: pts.Blocks()[blkIdx],
+			// total messages returned equal to sum of bls and secp messages
+			Messages: make([]types.ChainMsg, len(msgs.BlsMessages)+len(msgs.SecpkMessages)),
+			// total receipts returned equal to sum of bls and secp messages
+			Receipts: make([]*types.MessageReceipt, len(msgs.BlsMessages)+len(msgs.SecpkMessages)),
+			// index of message indicating execution order.
+			MessageExecutionIndex: make(map[types.ChainMsg]int),
+		}
+		// walk bls messages and extract their receipts
+		for blsIdx := range msgs.BlsMessages {
+			receipt, err := getReceipt(executionIndex)
+			if err != nil {
+				return nil, err
+			}
+			out[blkIdx].Messages[msgIdx] = msgs.BlsMessages[blsIdx]
+			out[blkIdx].Receipts[receiptIdx] = receipt
+			out[blkIdx].MessageExecutionIndex[msgs.BlsMessages[blsIdx]] = executionIndex
+			msgIdx++
+			receiptIdx++
+			executionIndex++
+		}
+		// walk secp messages and extract their receipts
+		for secpIdx := range msgs.SecpkMessages {
+			receipt, err := getReceipt(executionIndex)
+			if err != nil {
+				return nil, err
+			}
+			out[blkIdx].Messages[msgIdx] = msgs.SecpkMessages[secpIdx]
+			out[blkIdx].Receipts[receiptIdx] = receipt
+			out[blkIdx].MessageExecutionIndex[msgs.SecpkMessages[secpIdx]] = executionIndex
+			msgIdx++
+			receiptIdx++
+			executionIndex++
+		}
+	}
+	return out, nil
+}
+
+type vmWrapper struct {
+	vm vm.Interface
+	st *state.StateTree
+}
+
+func (v *vmWrapper) ShouldBurn(ctx context.Context, msg *types.Message, errcode exitcode.ExitCode) (bool, error) {
+	if lvmi, ok := v.vm.(*vm.LegacyVM); ok {
+		return lvmi.ShouldBurn(ctx, v.st, msg, errcode)
+	}
+
+	// Any "don't burn" rules from Network v13 onwards go here, for now we always return true
+	// source: https://github.com/filecoin-project/lotus/blob/v1.15.1/chain/vm/vm.go#L647
+	return true, nil
+}
+
+func (m *LilyNodeAPI) BurnFundsFn(ctx context.Context, ts *types.TipSet) (lens.ShouldBurnFn, error) {
+	// Create a skeleton vm just for calling ShouldBurn
+	// NB: VM is only required to process state prior to network v13
+	if util.DefaultNetwork.Version(ctx, ts.Height()) <= network2.Version12 {
+		vmi, err := vm.NewVM(ctx, &vm.VMOpts{
+			StateBase:      ts.ParentState(),
+			Epoch:          ts.Height(),
+			Bstore:         m.ChainAPI.Chain.StateBlockstore(),
+			Actors:         consensus.NewActorRegistry(),
+			Syscalls:       m.StateManager.Syscalls,
+			CircSupplyCalc: m.StateManager.GetVMCirculatingSupply,
+			NetworkVersion: util.DefaultNetwork.Version(ctx, ts.Height()),
+			BaseFee:        ts.Blocks()[0].ParentBaseFee,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating temporary vm: %w", err)
+		}
+		parentStateTree, err := state.LoadStateTree(m.ChainAPI.Chain.ActorStore(ctx), ts.ParentState())
+		if err != nil {
+			return nil, err
+		}
+		vmw := &vmWrapper{vm: vmi, st: parentStateTree}
+		return vmw.ShouldBurn, nil
+	}
+	// always burn after Network Version 12
+	return func(_ context.Context, _ *types.Message, _ exitcode.ExitCode) (bool, error) {
+		return true, nil
+	}, nil
+}
+
+func (m *LilyNodeAPI) CirculatingSupply(ctx context.Context, key types.TipSetKey) (api.CirculatingSupply, error) {
+	return m.StateAPI.StateVMCirculatingSupplyInternal(ctx, key)
+}
+
+func (m *LilyNodeAPI) ChainGetTipSetAfterHeight(ctx context.Context, epoch abi.ChainEpoch, key types.TipSetKey) (*types.TipSet, error) {
+	// TODO (Frrist): I copied this from lotus, I need it now to handle gap filling edge cases.
+	ts, err := m.ChainAPI.Chain.GetTipSetFromKey(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("loading tipset %s: %w", key, err)
+	}
+	return m.ChainAPI.Chain.GetTipsetByHeight(ctx, epoch, ts, false)
 }
 
 func (m *LilyNodeAPI) Store() adt.Store {
@@ -340,19 +813,19 @@ func (m *LilyNodeAPI) StateGetReceipt(ctx context.Context, msg cid.Cid, from typ
 	return &ml.Receipt, nil
 }
 
-func (m *LilyNodeAPI) LogList(ctx context.Context) ([]string, error) {
+func (m *LilyNodeAPI) LogList(_ context.Context) ([]string, error) {
 	return logging.GetSubsystems(), nil
 }
 
-func (m *LilyNodeAPI) LogSetLevel(ctx context.Context, subsystem, level string) error {
+func (m *LilyNodeAPI) LogSetLevel(_ context.Context, subsystem, level string) error {
 	return logging.SetLogLevel(subsystem, level)
 }
 
-func (m *LilyNodeAPI) LogSetLevelRegex(ctx context.Context, regex, level string) error {
+func (m *LilyNodeAPI) LogSetLevelRegex(_ context.Context, regex, level string) error {
 	return logging.SetLogLevelRegex(regex, level)
 }
 
-func (m *LilyNodeAPI) Shutdown(ctx context.Context) error {
+func (m *LilyNodeAPI) Shutdown(_ context.Context) error {
 	m.ShutdownChan <- struct{}{}
 	return nil
 }
@@ -362,150 +835,133 @@ func (m *LilyNodeAPI) LilySurvey(_ context.Context, cfg *LilySurveyConfig) (*sch
 	ctx := context.Background()
 
 	// create a database connection for this watch, ensure its pingable, and run migrations if needed/configured to.
-	strg, err := m.StorageCatalog.Connect(ctx, cfg.Storage, storage.Metadata{JobName: cfg.Name})
+	strg, err := m.StorageCatalog.Connect(ctx, cfg.JobConfig.Storage, storage.Metadata{JobName: cfg.JobConfig.Name})
 	if err != nil {
 		return nil, err
 	}
 
-	// instantiate a new surveyer.
-	surv, err := network.NewSurveyer(m, strg, cfg.Interval, cfg.Name, cfg.Tasks)
+	// instantiate a new survey.
+	surv, err := network.NewSurveyer(m, strg, cfg.Interval, cfg.JobConfig.Name, cfg.JobConfig.Tasks)
 	if err != nil {
 		return nil, err
 	}
 
 	res := m.Scheduler.Submit(&schedule.JobConfig{
-		Name:  cfg.Name,
-		Tasks: cfg.Tasks,
+		Name:  cfg.JobConfig.Name,
+		Tasks: cfg.JobConfig.Tasks,
 		Job:   surv,
 		Params: map[string]string{
 			"interval": cfg.Interval.String(),
 		},
-		RestartOnFailure:    cfg.RestartOnFailure,
-		RestartOnCompletion: cfg.RestartOnCompletion,
-		RestartDelay:        cfg.RestartDelay,
+		RestartOnFailure:    cfg.JobConfig.RestartOnFailure,
+		RestartOnCompletion: cfg.JobConfig.RestartOnCompletion,
+		RestartDelay:        cfg.JobConfig.RestartDelay,
 	})
 
 	return res, nil
 }
 
-var _ events.TipSetObserver = (*HeadNotifier)(nil)
-
-type HeadNotifier struct {
-	mu     sync.Mutex            // protects following fields
-	events chan *chain.HeadEvent // created lazily, closed by first cancel call
-	err    error                 // set to non-nil by the first cancel call
-
-	// size of the buffer to maintain for events. Using a buffer reduces chance
-	// that the emitter of events will block when sending to this notifier.
-	bufferSize int
+type StateReport struct {
+	Height      int64
+	TipSet      *types.TipSet
+	HasMessages bool
+	HasReceipts bool
+	HasState    bool
 }
 
-func (h *HeadNotifier) eventsCh() chan *chain.HeadEvent {
-	// caller must hold mu
-	if h.events == nil {
-		h.events = make(chan *chain.HeadEvent, h.bufferSize)
+func (m *LilyNodeAPI) StateCompute(ctx context.Context, key types.TipSetKey) (interface{}, error) {
+	ts, err := m.ChainAPI.ChainGetTipSet(ctx, key)
+	if err != nil {
+		return nil, err
 	}
-	return h.events
+	_, _, err = m.StateManager.TipSetState(ctx, ts)
+	return nil, err
 }
 
-func (h *HeadNotifier) HeadEvents() <-chan *chain.HeadEvent {
-	h.mu.Lock()
-	ev := h.eventsCh()
-	h.mu.Unlock()
-	return ev
+func (m *LilyNodeAPI) FindOldestState(ctx context.Context, limit int64) ([]*StateReport, error) {
+	head, err := m.ChainHead(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []*StateReport
+	var oldestEpochLimit = head.Height() - abi.ChainEpoch(limit)
+
+	for i := int64(0); true; i++ {
+		maybeBaseTS, err := m.ChainGetTipSetByHeight(ctx, head.Height()-abi.ChainEpoch(i), head.Key())
+		if err != nil {
+			return nil, err
+		}
+
+		maybeFullTS := TryLoadFullTipSet(ctx, m, maybeBaseTS)
+		out = append(out, &StateReport{
+			Height:      int64(maybeBaseTS.Height()),
+			TipSet:      maybeBaseTS,
+			HasMessages: maybeFullTS.HasMessages,
+			HasReceipts: maybeFullTS.HasReceipts,
+			HasState:    maybeFullTS.HasState,
+		})
+		if (head.Height() - abi.ChainEpoch(i)) <= oldestEpochLimit {
+			break
+		}
+	}
+	return out, nil
 }
 
-func (h *HeadNotifier) Err() error {
-	h.mu.Lock()
-	err := h.err
-	h.mu.Unlock()
-	return err
+type FullBlock struct {
+	Header       *types.BlockHeader
+	BlsMessages  []*types.Message
+	SecpMessages []*types.SignedMessage
 }
 
-func (h *HeadNotifier) Cancel(err error) {
-	h.mu.Lock()
-	if h.err != nil {
-		h.mu.Unlock()
-		return
-	}
-	h.err = err
-	if h.events == nil {
-		h.events = make(chan *chain.HeadEvent, h.bufferSize)
-	}
-	close(h.events)
-	h.mu.Unlock()
+type FullTipSet struct {
+	Blocks []*FullBlock
+	TipSet *types.TipSet
+
+	HasMessages bool
+	HasState    bool
+	HasReceipts bool
 }
 
-func (h *HeadNotifier) SetCurrent(ctx context.Context, ts *types.TipSet) error {
-	h.mu.Lock()
-	if h.err != nil {
-		err := h.err
-		h.mu.Unlock()
-		return err
-	}
-	ev := h.eventsCh()
-	h.mu.Unlock()
+func TryLoadFullTipSet(ctx context.Context, m *LilyNodeAPI, ts *types.TipSet) *FullTipSet {
+	var (
+		out         []*FullBlock
+		err         error
+		hasState    = true
+		hasMessages = true
+		hasReceipts = true
+	)
 
-	// This is imprecise since it's inherently racy but good enough to emit
-	// a warning that the event may block the sender
-	if len(ev) == cap(ev) {
-		log.Warnw("head notifier buffer at capacity", "queued", len(ev))
-	}
+	for _, b := range ts.Blocks() {
+		fb := &FullBlock{Header: b}
 
-	log.Debugw("head notifier setting head", "tipset", ts.Key().String())
-	ev <- &chain.HeadEvent{
-		Type:   chain.HeadEventCurrent,
-		TipSet: ts,
-	}
-	return nil
-}
-
-func (h *HeadNotifier) Apply(ctx context.Context, from, to *types.TipSet) error {
-	h.mu.Lock()
-	if h.err != nil {
-		err := h.err
-		h.mu.Unlock()
-		return err
-	}
-	ev := h.eventsCh()
-	h.mu.Unlock()
-
-	// This is imprecise since it's inherently racy but good enough to emit
-	// a warning that the event may block the sender
-	if len(ev) == cap(ev) {
-		log.Warnw("head notifier buffer at capacity", "queued", len(ev))
+		fb.BlsMessages, fb.SecpMessages, err = m.ChainAPI.Chain.MessagesForBlock(ctx, b)
+		if err != nil {
+			log.Debugw("failed to load messages", "height", b.Height)
+			hasMessages = false
+		}
+		out = append(out, fb)
 	}
 
-	log.Debugw("head notifier apply", "to", to.Key().String(), "from", from.Key().String())
-	ev <- &chain.HeadEvent{
-		Type:   chain.HeadEventApply,
-		TipSet: to,
-	}
-	return nil
-}
-
-func (h *HeadNotifier) Revert(ctx context.Context, from, to *types.TipSet) error {
-	h.mu.Lock()
-	if h.err != nil {
-		err := h.err
-		h.mu.Unlock()
-		return err
-	}
-	ev := h.eventsCh()
-	h.mu.Unlock()
-
-	// This is imprecise since it's inherently racy but good enough to emit
-	// a warning that the event may block the sender
-	if len(ev) == cap(ev) {
-		log.Warnw("head notifier buffer at capacity", "queued", len(ev))
+	_, err = adt.AsArray(m.ChainAPI.Chain.ActorStore(ctx), ts.Blocks()[0].ParentMessageReceipts)
+	if err != nil {
+		log.Debugw("failed to load receipts", "height", ts.Blocks()[0].Height)
+		hasReceipts = false
 	}
 
-	log.Debugw("head notifier revert", "to", to.Key().String(), "from", from.Key().String())
-	ev <- &chain.HeadEvent{
-		Type:   chain.HeadEventRevert,
-		TipSet: from,
+	_, err = m.StateManager.ParentState(ts)
+	if err != nil {
+		log.Debugw("failed to load statetree", "height", ts.Blocks()[0].Height)
+		hasState = false
 	}
-	return nil
+
+	return &FullTipSet{
+		Blocks:      out,
+		TipSet:      ts,
+		HasMessages: hasMessages,
+		HasState:    hasState,
+		HasReceipts: hasReceipts,
+	}
 }
 
 // used for debugging querries, call ORM.AddHook and this will print all queries.
@@ -526,6 +982,6 @@ func (l *LogQueryHook) BeforeQuery(ctx context.Context, evt *pg.QueryEvent) (con
 	return ctx, nil
 }
 
-func (l *LogQueryHook) AfterQuery(ctx context.Context, event *pg.QueryEvent) error {
+func (l *LogQueryHook) AfterQuery(_ context.Context, _ *pg.QueryEvent) error {
 	return nil
 }

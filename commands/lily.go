@@ -2,26 +2,26 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/filecoin-project/go-jsonrpc"
+	"github.com/filecoin-project/lily/lens/lily"
+
 	cliutil "github.com/filecoin-project/lotus/cli/util"
 	"github.com/filecoin-project/lotus/node"
 	"github.com/filecoin-project/lotus/node/repo"
-	"golang.org/x/xerrors"
-
-	"github.com/filecoin-project/lily/lens/lily"
 )
 
-func GetAPI(ctx context.Context, addrStr string, token string) (lily.LilyAPI, jsonrpc.ClientCloser, error) {
-	addrStr = strings.TrimSpace(addrStr)
+func GetAPI(ctx context.Context) (lily.LilyAPI, jsonrpc.ClientCloser, error) {
+	addrStr := strings.TrimSpace(ClientAPIFlags.APIAddr)
 
-	ainfo := cliutil.APIInfo{Addr: addrStr, Token: []byte(token)}
+	ainfo := cliutil.APIInfo{Addr: addrStr, Token: []byte(ClientAPIFlags.APIToken)}
 
 	addr, err := ainfo.DialArgs("v0")
 	if err != nil {
-		return nil, nil, xerrors.Errorf("could not get DialArgs: %w", err)
+		return nil, nil, fmt.Errorf("could not get DialArgs: %w", err)
 	}
 
 	return NewSentinelNodeRPC(ctx, addr, ainfo.AuthHeader())

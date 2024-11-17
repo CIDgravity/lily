@@ -3,9 +3,10 @@ package verifreg
 import (
 	"context"
 
+	"go.opencensus.io/tag"
+
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
-	"go.opencensus.io/tag"
 )
 
 const (
@@ -23,20 +24,16 @@ type VerifiedRegistryVerifier struct {
 	DataCap string `pg:",notnull,type:numeric"`
 }
 
-func (v *VerifiedRegistryVerifier) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (v *VerifiedRegistryVerifier) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "verified_registry_verifier"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	return s.PersistModel(ctx, v)
 }
 
 type VerifiedRegistryVerifiersList []*VerifiedRegistryVerifier
 
-func (v VerifiedRegistryVerifiersList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (v VerifiedRegistryVerifiersList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "verified_registry_verifier"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	return s.PersistModel(ctx, v)
 }
@@ -50,20 +47,16 @@ type VerifiedRegistryVerifiedClient struct {
 	DataCap string `pg:"type:numeric,notnull"`
 }
 
-func (v *VerifiedRegistryVerifiedClient) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (v *VerifiedRegistryVerifiedClient) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "verified_registry_verified_client"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	return s.PersistModel(ctx, v)
 }
 
 type VerifiedRegistryVerifiedClientsList []*VerifiedRegistryVerifiedClient
 
-func (v VerifiedRegistryVerifiedClientsList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (v VerifiedRegistryVerifiedClientsList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "verified_registry_verified_client"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	return s.PersistModel(ctx, v)
 }

@@ -2,30 +2,23 @@
 package miner
 
 import (
-	"github.com/filecoin-project/go-state-types/big"
-	"github.com/filecoin-project/go-state-types/network"
 	"github.com/ipfs/go-cid"
-	"github.com/libp2p/go-libp2p-core/peer"
 	cbg "github.com/whyrusleeping/cbor-gen"
 	"golang.org/x/xerrors"
 
-	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-bitfield"
 	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/big"
+	minertypes13 "github.com/filecoin-project/go-state-types/builtin/v13/miner"
+	miner15 "github.com/filecoin-project/go-state-types/builtin/v15/miner"
+	miner8 "github.com/filecoin-project/go-state-types/builtin/v8/miner"
+	minertypes "github.com/filecoin-project/go-state-types/builtin/v9/miner"
 	"github.com/filecoin-project/go-state-types/cbor"
 	"github.com/filecoin-project/go-state-types/dline"
-
-	"github.com/filecoin-project/lotus/chain/types"
-
-	"github.com/filecoin-project/lily/chain/actors/adt"
-	"github.com/filecoin-project/lily/chain/actors/builtin"
-
-	miner0 "github.com/filecoin-project/specs-actors/actors/builtin/miner"
-	miner2 "github.com/filecoin-project/specs-actors/v2/actors/builtin/miner"
-	miner3 "github.com/filecoin-project/specs-actors/v3/actors/builtin/miner"
-	miner5 "github.com/filecoin-project/specs-actors/v5/actors/builtin/miner"
-	miner7 "github.com/filecoin-project/specs-actors/v7/actors/builtin/miner"
-
+	"github.com/filecoin-project/go-state-types/manifest"
+	"github.com/filecoin-project/go-state-types/network"
+	"github.com/filecoin-project/go-state-types/proof"
 	builtin0 "github.com/filecoin-project/specs-actors/actors/builtin"
 	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
 	builtin3 "github.com/filecoin-project/specs-actors/v3/actors/builtin"
@@ -33,69 +26,47 @@ import (
 	builtin5 "github.com/filecoin-project/specs-actors/v5/actors/builtin"
 	builtin6 "github.com/filecoin-project/specs-actors/v6/actors/builtin"
 	builtin7 "github.com/filecoin-project/specs-actors/v7/actors/builtin"
+
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
+	"github.com/filecoin-project/lotus/chain/actors/adt"
+	"github.com/filecoin-project/lotus/chain/types"
 )
 
-func init() {
-
-	builtin.RegisterActorState(builtin0.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load0(store, root)
-	})
-
-	builtin.RegisterActorState(builtin2.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load2(store, root)
-	})
-
-	builtin.RegisterActorState(builtin3.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load3(store, root)
-	})
-
-	builtin.RegisterActorState(builtin4.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load4(store, root)
-	})
-
-	builtin.RegisterActorState(builtin5.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load5(store, root)
-	})
-
-	builtin.RegisterActorState(builtin6.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load6(store, root)
-	})
-
-	builtin.RegisterActorState(builtin7.StorageMinerActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load7(store, root)
-	})
-
-}
-
-var Methods = builtin7.MethodsMiner
-
-func AllCodes() []cid.Cid {
-	return []cid.Cid{
-		builtin0.StorageMinerActorCodeID,
-		builtin2.StorageMinerActorCodeID,
-		builtin3.StorageMinerActorCodeID,
-		builtin4.StorageMinerActorCodeID,
-		builtin5.StorageMinerActorCodeID,
-		builtin6.StorageMinerActorCodeID,
-		builtin7.StorageMinerActorCodeID,
-	}
-}
-
-// Unchanged between v0, v2, v3, and v4 actors
-var WPoStProvingPeriod = miner0.WPoStProvingPeriod
-var WPoStPeriodDeadlines = miner0.WPoStPeriodDeadlines
-var WPoStChallengeWindow = miner0.WPoStChallengeWindow
-var WPoStChallengeLookback = miner0.WPoStChallengeLookback
-var FaultDeclarationCutoff = miner0.FaultDeclarationCutoff
-
-const MinSectorExpiration = miner0.MinSectorExpiration
-
-// Not used / checked in v0
-// TODO: Abstract over network versions
-var DeclarationsMax = miner2.DeclarationsMax
-var AddressedSectorsMax = miner2.AddressedSectorsMax
-
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+		if name != manifest.MinerKey {
+			return nil, xerrors.Errorf("actor code is not miner: %s", name)
+		}
+
+		switch actorstypes.Version(av) {
+
+		case actorstypes.Version8:
+			return load8(store, act.Head)
+
+		case actorstypes.Version9:
+			return load9(store, act.Head)
+
+		case actorstypes.Version10:
+			return load10(store, act.Head)
+
+		case actorstypes.Version11:
+			return load11(store, act.Head)
+
+		case actorstypes.Version12:
+			return load12(store, act.Head)
+
+		case actorstypes.Version13:
+			return load13(store, act.Head)
+
+		case actorstypes.Version14:
+			return load14(store, act.Head)
+
+		case actorstypes.Version15:
+			return load15(store, act.Head)
+
+		}
+	}
+
 	switch act.Code {
 
 	case builtin0.StorageMinerActorCodeID:
@@ -120,13 +91,68 @@ func Load(store adt.Store, act *types.Actor) (State, error) {
 		return load7(store, act.Head)
 
 	}
+
 	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+}
+
+func MakeState(store adt.Store, av actorstypes.Version) (State, error) {
+	switch av {
+
+	case actorstypes.Version0:
+		return make0(store)
+
+	case actorstypes.Version2:
+		return make2(store)
+
+	case actorstypes.Version3:
+		return make3(store)
+
+	case actorstypes.Version4:
+		return make4(store)
+
+	case actorstypes.Version5:
+		return make5(store)
+
+	case actorstypes.Version6:
+		return make6(store)
+
+	case actorstypes.Version7:
+		return make7(store)
+
+	case actorstypes.Version8:
+		return make8(store)
+
+	case actorstypes.Version9:
+		return make9(store)
+
+	case actorstypes.Version10:
+		return make10(store)
+
+	case actorstypes.Version11:
+		return make11(store)
+
+	case actorstypes.Version12:
+		return make12(store)
+
+	case actorstypes.Version13:
+		return make13(store)
+
+	case actorstypes.Version14:
+		return make14(store)
+
+	case actorstypes.Version15:
+		return make15(store)
+
+	}
+	return nil, xerrors.Errorf("unknown actor version %d", av)
 }
 
 type State interface {
 	cbor.Marshaler
 
 	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
 
 	// Total available balance to spend.
 	AvailableBalance(abi.TokenAmount) (abi.TokenAmount, error)
@@ -151,6 +177,8 @@ type State interface {
 
 	// Note that ProvingPeriodStart is deprecated and will be renamed / removed in a future version of actors
 	GetProvingPeriodStart() (abi.ChainEpoch, error)
+	// Testing only
+	EraseAllUnproven() error
 
 	LoadDeadline(idx uint64) (Deadline, error)
 	ForEachDeadline(cb func(idx uint64, dl Deadline) error) error
@@ -163,14 +191,19 @@ type State interface {
 	DeadlineInfo(epoch abi.ChainEpoch) (*dline.Info, error)
 	DeadlineCronActive() (bool, error)
 
-	SectorsAmtBitwidth() int
+	GetState() interface{}
 
 	// Diff helpers. Used by Diff* functions internally.
-	sectors() (adt.Array, error)
-	decodeSectorOnChainInfo(*cbg.Deferred) (SectorOnChainInfo, error)
-	precommits() (adt.Map, error)
-	decodeSectorPreCommitOnChainInfo(*cbg.Deferred) (SectorPreCommitOnChainInfo, error)
-	GetState() interface{}
+	SectorsArray() (adt.Array, error)
+	SectorsAmtBitwidth() int
+	DecodeSectorOnChainInfo(*cbg.Deferred) (SectorOnChainInfo, error)
+
+	PrecommitsMap() (adt.Map, error)
+	PrecommitsMapBitWidth() int
+	PrecommitsMapHashFunction() func(input []byte) []byte
+	DecodeSectorPreCommitOnChainInfo(*cbg.Deferred) (SectorPreCommitOnChainInfo, error)
+	DecodeSectorPreCommitOnChainInfoToV8(*cbg.Deferred) (miner8.SectorPreCommitOnChainInfo, error)
+	ForEachPrecommittedSectorV8(func(miner8.SectorPreCommitOnChainInfo) error) error
 }
 
 type Deadline interface {
@@ -207,45 +240,9 @@ type Partition interface {
 	UnprovenSectors() (bitfield.BitField, error)
 }
 
-type SectorOnChainInfo struct {
-	SectorNumber          abi.SectorNumber
-	SealProof             abi.RegisteredSealProof
-	SealedCID             cid.Cid
-	DealIDs               []abi.DealID
-	Activation            abi.ChainEpoch
-	Expiration            abi.ChainEpoch
-	DealWeight            abi.DealWeight
-	VerifiedDealWeight    abi.DealWeight
-	InitialPledge         abi.TokenAmount
-	ExpectedDayReward     abi.TokenAmount
-	ExpectedStoragePledge abi.TokenAmount
-	SectorKeyCID          *cid.Cid
-}
+type SectorOnChainInfo = miner15.SectorOnChainInfo
 
-type SectorPreCommitInfo = miner0.SectorPreCommitInfo
-
-type SectorPreCommitOnChainInfo struct {
-	Info               SectorPreCommitInfo
-	PreCommitDeposit   abi.TokenAmount
-	PreCommitEpoch     abi.ChainEpoch
-	DealWeight         abi.DealWeight
-	VerifiedDealWeight abi.DealWeight
-}
-
-type PoStPartition = miner0.PoStPartition
-type RecoveryDeclaration = miner0.RecoveryDeclaration
-type FaultDeclaration = miner0.FaultDeclaration
-
-// Params
-type DeclareFaultsParams = miner0.DeclareFaultsParams
-type DeclareFaultsRecoveredParams = miner0.DeclareFaultsRecoveredParams
-type SubmitWindowedPoStParams = miner0.SubmitWindowedPoStParams
-type ProveCommitSectorParams = miner0.ProveCommitSectorParams
-type DisputeWindowedPoStParams = miner3.DisputeWindowedPoStParams
-type ProveCommitAggregateParams = miner5.ProveCommitAggregateParams
-type ProveReplicaUpdatesParams = miner7.ProveReplicaUpdatesParams
-
-func PreferredSealProofTypeFromWindowPoStType(nver network.Version, proof abi.RegisteredPoStProof) (abi.RegisteredSealProof, error) {
+func PreferredSealProofTypeFromWindowPoStType(nver network.Version, proof abi.RegisteredPoStProof, configWantSynthetic bool) (abi.RegisteredSealProof, error) {
 	// We added support for the new proofs in network version 7, and removed support for the old
 	// ones in network version 8.
 	if nver < network.Version7 {
@@ -265,16 +262,33 @@ func PreferredSealProofTypeFromWindowPoStType(nver network.Version, proof abi.Re
 		}
 	}
 
+	if nver < network.Version21 || !configWantSynthetic {
+		switch proof {
+		case abi.RegisteredPoStProof_StackedDrgWindow2KiBV1, abi.RegisteredPoStProof_StackedDrgWindow2KiBV1_1:
+			return abi.RegisteredSealProof_StackedDrg2KiBV1_1_Feat_SyntheticPoRep, nil
+		case abi.RegisteredPoStProof_StackedDrgWindow8MiBV1, abi.RegisteredPoStProof_StackedDrgWindow8MiBV1_1:
+			return abi.RegisteredSealProof_StackedDrg8MiBV1_1_Feat_SyntheticPoRep, nil
+		case abi.RegisteredPoStProof_StackedDrgWindow512MiBV1, abi.RegisteredPoStProof_StackedDrgWindow512MiBV1_1:
+			return abi.RegisteredSealProof_StackedDrg512MiBV1_1_Feat_SyntheticPoRep, nil
+		case abi.RegisteredPoStProof_StackedDrgWindow32GiBV1, abi.RegisteredPoStProof_StackedDrgWindow32GiBV1_1:
+			return abi.RegisteredSealProof_StackedDrg32GiBV1_1_Feat_SyntheticPoRep, nil
+		case abi.RegisteredPoStProof_StackedDrgWindow64GiBV1, abi.RegisteredPoStProof_StackedDrgWindow64GiBV1_1:
+			return abi.RegisteredSealProof_StackedDrg64GiBV1_1_Feat_SyntheticPoRep, nil
+		default:
+			return -1, xerrors.Errorf("unrecognized window post type: %d", proof)
+		}
+	}
+
 	switch proof {
-	case abi.RegisteredPoStProof_StackedDrgWindow2KiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow2KiBV1, abi.RegisteredPoStProof_StackedDrgWindow2KiBV1_1:
 		return abi.RegisteredSealProof_StackedDrg2KiBV1_1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow8MiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow8MiBV1, abi.RegisteredPoStProof_StackedDrgWindow8MiBV1_1:
 		return abi.RegisteredSealProof_StackedDrg8MiBV1_1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow512MiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow512MiBV1, abi.RegisteredPoStProof_StackedDrgWindow512MiBV1_1:
 		return abi.RegisteredSealProof_StackedDrg512MiBV1_1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow32GiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow32GiBV1, abi.RegisteredPoStProof_StackedDrgWindow32GiBV1_1:
 		return abi.RegisteredSealProof_StackedDrg32GiBV1_1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow64GiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow64GiBV1, abi.RegisteredPoStProof_StackedDrgWindow64GiBV1_1:
 		return abi.RegisteredSealProof_StackedDrg64GiBV1_1, nil
 	default:
 		return -1, xerrors.Errorf("unrecognized window post type: %d", proof)
@@ -283,48 +297,64 @@ func PreferredSealProofTypeFromWindowPoStType(nver network.Version, proof abi.Re
 
 func WinningPoStProofTypeFromWindowPoStProofType(nver network.Version, proof abi.RegisteredPoStProof) (abi.RegisteredPoStProof, error) {
 	switch proof {
-	case abi.RegisteredPoStProof_StackedDrgWindow2KiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow2KiBV1, abi.RegisteredPoStProof_StackedDrgWindow2KiBV1_1:
 		return abi.RegisteredPoStProof_StackedDrgWinning2KiBV1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow8MiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow8MiBV1, abi.RegisteredPoStProof_StackedDrgWindow8MiBV1_1:
 		return abi.RegisteredPoStProof_StackedDrgWinning8MiBV1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow512MiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow512MiBV1, abi.RegisteredPoStProof_StackedDrgWindow512MiBV1_1:
 		return abi.RegisteredPoStProof_StackedDrgWinning512MiBV1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow32GiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow32GiBV1, abi.RegisteredPoStProof_StackedDrgWindow32GiBV1_1:
 		return abi.RegisteredPoStProof_StackedDrgWinning32GiBV1, nil
-	case abi.RegisteredPoStProof_StackedDrgWindow64GiBV1:
+	case abi.RegisteredPoStProof_StackedDrgWindow64GiBV1, abi.RegisteredPoStProof_StackedDrgWindow64GiBV1_1:
 		return abi.RegisteredPoStProof_StackedDrgWinning64GiBV1, nil
 	default:
 		return -1, xerrors.Errorf("unknown proof type %d", proof)
 	}
 }
 
-type MinerInfo struct {
-	Owner                      address.Address   // Must be an ID-address.
-	Worker                     address.Address   // Must be an ID-address.
-	NewWorker                  address.Address   // Must be an ID-address.
-	ControlAddresses           []address.Address // Must be an ID-addresses.
-	WorkerChangeEpoch          abi.ChainEpoch
-	PeerId                     *peer.ID
-	Multiaddrs                 []abi.Multiaddrs
-	WindowPoStProofType        abi.RegisteredPoStProof
-	SectorSize                 abi.SectorSize
-	WindowPoStPartitionSectors uint64
-	ConsensusFaultElapsed      abi.ChainEpoch
-}
+type MinerInfo = minertypes.MinerInfo
+type WorkerKeyChange = minertypes.WorkerKeyChange
+type WindowPostVerifyInfo = proof.WindowPoStVerifyInfo
+type BeneficiaryTerm = minertypes.BeneficiaryTerm
+type PendingBeneficiaryChange = minertypes.PendingBeneficiaryChange
+type SectorPreCommitOnChainInfo = minertypes.SectorPreCommitOnChainInfo
+type SectorPreCommitInfo = minertypes.SectorPreCommitInfo
+type SubmitWindowedPoStParams = minertypes.SubmitWindowedPoStParams
+type PoStPartition = minertypes.PoStPartition
+type RecoveryDeclaration = minertypes.RecoveryDeclaration
+type FaultDeclaration = minertypes.FaultDeclaration
+type DeclareFaultsRecoveredParams = minertypes.DeclareFaultsRecoveredParams
+type DeclareFaultsParams = minertypes.DeclareFaultsParams
+type ProveCommitAggregateParams = minertypes.ProveCommitAggregateParams
+type ProveCommitSectorParams = minertypes.ProveCommitSectorParams
+type ProveReplicaUpdatesParams = minertypes.ProveReplicaUpdatesParams
+type ReplicaUpdate = minertypes.ReplicaUpdate
+type PreCommitSectorBatchParams = minertypes.PreCommitSectorBatchParams
+type PreCommitSectorBatchParams2 = minertypes.PreCommitSectorBatchParams2
+type ExtendSectorExpiration2Params = minertypes.ExtendSectorExpiration2Params
+type SectorClaim = minertypes.SectorClaim
+type ExpirationExtension2 = minertypes.ExpirationExtension2
+type CompactPartitionsParams = minertypes.CompactPartitionsParams
+type WithdrawBalanceParams = minertypes.WithdrawBalanceParams
 
-func (mi MinerInfo) IsController(addr address.Address) bool {
-	if addr == mi.Owner || addr == mi.Worker {
-		return true
-	}
+var WPoStProvingPeriod = func() abi.ChainEpoch { return minertypes.WPoStProvingPeriod }
+var WPoStChallengeWindow = func() abi.ChainEpoch { return minertypes.WPoStChallengeWindow }
 
-	for _, ca := range mi.ControlAddresses {
-		if addr == ca {
-			return true
-		}
-	}
+const WPoStPeriodDeadlines = minertypes.WPoStPeriodDeadlines
+const WPoStChallengeLookback = minertypes.WPoStChallengeLookback
+const FaultDeclarationCutoff = minertypes.FaultDeclarationCutoff
+const MinAggregatedSectors = minertypes.MinAggregatedSectors
+const MinSectorExpiration = minertypes.MinSectorExpiration
 
-	return false
-}
+type PieceActivationManifest = minertypes13.PieceActivationManifest
+type ProveCommitSectors3Params = minertypes13.ProveCommitSectors3Params
+type SectorActivationManifest = minertypes13.SectorActivationManifest
+type ProveReplicaUpdates3Params = minertypes13.ProveReplicaUpdates3Params
+type SectorUpdateManifest = minertypes13.SectorUpdateManifest
+type SectorOnChainInfoFlags = minertypes13.SectorOnChainInfoFlags
+type VerifiedAllocationKey = minertypes13.VerifiedAllocationKey
+
+var QAPowerMax = minertypes.QAPowerMax
 
 type SectorExpiration struct {
 	OnTime abi.ChainEpoch
@@ -339,14 +369,7 @@ type SectorLocation struct {
 	Partition uint64
 }
 
-type SectorChanges struct {
-	Added    []SectorOnChainInfo
-	Extended []SectorModification
-	Snapped  []SectorModification
-	Removed  []SectorOnChainInfo
-}
-
-type SectorModification struct {
+type SectorExtensions struct {
 	From SectorOnChainInfo
 	To   SectorOnChainInfo
 }
@@ -364,4 +387,56 @@ type LockedFunds struct {
 
 func (lf LockedFunds) TotalLockedFunds() abi.TokenAmount {
 	return big.Add(lf.VestingFunds, big.Add(lf.InitialPledgeRequirement, lf.PreCommitDeposits))
+}
+
+type SectorChanges struct {
+	Added    []SectorOnChainInfo
+	Extended []SectorModification
+	Snapped  []SectorModification
+	Removed  []SectorOnChainInfo
+}
+
+type SectorModification struct {
+	From SectorOnChainInfo
+	To   SectorOnChainInfo
+}
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{
+		(&state0{}).Code(),
+		(&state2{}).Code(),
+		(&state3{}).Code(),
+		(&state4{}).Code(),
+		(&state5{}).Code(),
+		(&state6{}).Code(),
+		(&state7{}).Code(),
+		(&state8{}).Code(),
+		(&state9{}).Code(),
+		(&state10{}).Code(),
+		(&state11{}).Code(),
+		(&state12{}).Code(),
+		(&state13{}).Code(),
+		(&state14{}).Code(),
+		(&state15{}).Code(),
+	}
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+		actorstypes.Version0:  (&state0{}).Code(),
+		actorstypes.Version2:  (&state2{}).Code(),
+		actorstypes.Version3:  (&state3{}).Code(),
+		actorstypes.Version4:  (&state4{}).Code(),
+		actorstypes.Version5:  (&state5{}).Code(),
+		actorstypes.Version6:  (&state6{}).Code(),
+		actorstypes.Version7:  (&state7{}).Code(),
+		actorstypes.Version8:  (&state8{}).Code(),
+		actorstypes.Version9:  (&state9{}).Code(),
+		actorstypes.Version10: (&state10{}).Code(),
+		actorstypes.Version11: (&state11{}).Code(),
+		actorstypes.Version12: (&state12{}).Code(),
+		actorstypes.Version13: (&state13{}).Code(),
+		actorstypes.Version14: (&state14{}).Code(),
+		actorstypes.Version15: (&state15{}).Code(),
+	}
 }

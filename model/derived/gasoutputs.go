@@ -2,19 +2,18 @@ package derived
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
 )
 
 type GasOutputs struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName          struct{} `pg:"derived_gas_outputs"`
+	tableName          struct{} `pg:"derived_gas_outputs"` // nolint: structcheck
 	Height             int64    `pg:",pk,use_zero,notnull"`
 	Cid                string   `pg:",pk,notnull"`
 	StateRoot          string   `pg:",pk,notnull"`
@@ -42,8 +41,7 @@ type GasOutputs struct {
 }
 
 type GasOutputsV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName          struct{} `pg:"derived_gas_outputs"`
+	tableName          struct{} `pg:"derived_gas_outputs"` // nolint: structcheck
 	Height             int64    `pg:",pk,use_zero,notnull"`
 	Cid                string   `pg:",pk,notnull"`
 	StateRoot          string   `pg:",pk,notnull"`
@@ -110,12 +108,10 @@ func (g *GasOutputs) AsVersion(version model.Version) (interface{}, bool) {
 
 func (g *GasOutputs) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "derived_gas_outputs"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vg, ok := g.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("GasOutputs not supported for schema version %s", version)
+		return fmt.Errorf("GasOutputs not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -135,15 +131,13 @@ func (l GasOutputsList) Persist(ctx context.Context, s model.StorageBatch, versi
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "derived_gas_outputs"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if version.Major != 1 {
 		vgl := make([]interface{}, 0, len(l))
 		for _, g := range l {
 			vg, ok := g.AsVersion(version)
 			if !ok {
-				return xerrors.Errorf("GasOutputs not supported for schema version %s", version)
+				return fmt.Errorf("GasOutputs not supported for schema version %s", version)
 			}
 			vgl = append(vgl, vg)
 		}

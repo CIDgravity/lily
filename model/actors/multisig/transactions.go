@@ -3,9 +3,10 @@ package multisig
 import (
 	"context"
 
+	"go.opencensus.io/tag"
+
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
-	"go.opencensus.io/tag"
 )
 
 type MultisigTransaction struct {
@@ -22,22 +23,16 @@ type MultisigTransaction struct {
 	Approved []string `pg:",notnull"`
 }
 
-func (m *MultisigTransaction) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (m *MultisigTransaction) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "multisig_transactions"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, m)
 }
 
 type MultisigTransactionList []*MultisigTransaction
 
-func (ml MultisigTransactionList) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (ml MultisigTransactionList) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "multisig_transactions"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, len(ml))
 	return s.PersistModel(ctx, ml)
 }

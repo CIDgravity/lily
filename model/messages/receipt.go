@@ -3,11 +3,12 @@ package messages
 import (
 	"context"
 
-	"github.com/filecoin-project/lily/metrics"
-	"github.com/filecoin-project/lily/model"
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/filecoin-project/lily/metrics"
+	"github.com/filecoin-project/lily/model"
 )
 
 type Receipt struct {
@@ -18,20 +19,21 @@ type Receipt struct {
 	Idx      int   `pg:",use_zero"`
 	ExitCode int64 `pg:",use_zero"`
 	GasUsed  int64 `pg:",use_zero"`
+
+	Return []byte
+	// Result returned from executing a message parsed and serialized as a JSON object.
+	ParsedReturn string `pg:",type:jsonb"`
 }
 
-func (r *Receipt) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (r *Receipt) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "receipts"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
 	return s.PersistModel(ctx, r)
 }
 
 type Receipts []*Receipt
 
-func (rs Receipts) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
+func (rs Receipts) Persist(ctx context.Context, s model.StorageBatch, _ model.Version) error {
 	if len(rs) == 0 {
 		return nil
 	}
@@ -42,9 +44,6 @@ func (rs Receipts) Persist(ctx context.Context, s model.StorageBatch, version mo
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "receipts"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
-
 	metrics.RecordCount(ctx, metrics.PersistModel, len(rs))
 	return s.PersistModel(ctx, rs)
 }

@@ -2,14 +2,19 @@
 package reward
 
 import (
-	"github.com/filecoin-project/go-state-types/abi"
-	reward0 "github.com/filecoin-project/specs-actors/actors/builtin/reward"
+	"fmt"
+
 	"github.com/ipfs/go-cid"
-	"golang.org/x/xerrors"
 
+	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	builtin15 "github.com/filecoin-project/go-state-types/builtin"
 	"github.com/filecoin-project/go-state-types/cbor"
-
+	"github.com/filecoin-project/go-state-types/manifest"
+	"github.com/filecoin-project/lily/chain/actors/adt"
+	"github.com/filecoin-project/lily/chain/actors/builtin"
 	builtin0 "github.com/filecoin-project/specs-actors/actors/builtin"
+	reward0 "github.com/filecoin-project/specs-actors/actors/builtin/reward"
 	builtin2 "github.com/filecoin-project/specs-actors/v2/actors/builtin"
 	builtin3 "github.com/filecoin-project/specs-actors/v3/actors/builtin"
 	builtin4 "github.com/filecoin-project/specs-actors/v4/actors/builtin"
@@ -17,61 +22,50 @@ import (
 	builtin6 "github.com/filecoin-project/specs-actors/v6/actors/builtin"
 	builtin7 "github.com/filecoin-project/specs-actors/v7/actors/builtin"
 
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lotus/chain/types"
-
-	"github.com/filecoin-project/lily/chain/actors/adt"
-	"github.com/filecoin-project/lily/chain/actors/builtin"
 )
-
-func init() {
-
-	builtin.RegisterActorState(builtin0.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load0(store, root)
-	})
-
-	builtin.RegisterActorState(builtin2.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load2(store, root)
-	})
-
-	builtin.RegisterActorState(builtin3.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load3(store, root)
-	})
-
-	builtin.RegisterActorState(builtin4.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load4(store, root)
-	})
-
-	builtin.RegisterActorState(builtin5.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load5(store, root)
-	})
-
-	builtin.RegisterActorState(builtin6.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load6(store, root)
-	})
-
-	builtin.RegisterActorState(builtin7.RewardActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load7(store, root)
-	})
-}
 
 var (
-	Address = builtin7.RewardActorAddr
-	Methods = builtin7.MethodsReward
+	Address = builtin15.RewardActorAddr
+	Methods = builtin15.MethodsReward
 )
 
-func AllCodes() []cid.Cid {
-	return []cid.Cid{
-		builtin0.RewardActorCodeID,
-		builtin2.RewardActorCodeID,
-		builtin3.RewardActorCodeID,
-		builtin4.RewardActorCodeID,
-		builtin5.RewardActorCodeID,
-		builtin6.RewardActorCodeID,
-		builtin7.RewardActorCodeID,
-	}
-}
-
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+		if name != manifest.RewardKey {
+			return nil, fmt.Errorf("actor code is not reward: %s", name)
+		}
+
+		switch actorstypes.Version(av) {
+
+		case actorstypes.Version8:
+			return load8(store, act.Head)
+
+		case actorstypes.Version9:
+			return load9(store, act.Head)
+
+		case actorstypes.Version10:
+			return load10(store, act.Head)
+
+		case actorstypes.Version11:
+			return load11(store, act.Head)
+
+		case actorstypes.Version12:
+			return load12(store, act.Head)
+
+		case actorstypes.Version13:
+			return load13(store, act.Head)
+
+		case actorstypes.Version14:
+			return load14(store, act.Head)
+
+		case actorstypes.Version15:
+			return load15(store, act.Head)
+
+		}
+	}
+
 	switch act.Code {
 
 	case builtin0.RewardActorCodeID:
@@ -96,11 +90,16 @@ func Load(store adt.Store, act *types.Actor) (State, error) {
 		return load7(store, act.Head)
 
 	}
-	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+
+	return nil, fmt.Errorf("unknown actor code %s", act.Code)
 }
 
 type State interface {
 	cbor.Marshaler
+
+	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
 
 	ThisEpochBaselinePower() (abi.StoragePower, error)
 	ThisEpochReward() (abi.StoragePower, error)
@@ -114,8 +113,55 @@ type State interface {
 	CumsumBaseline() (abi.StoragePower, error)
 	CumsumRealized() (abi.StoragePower, error)
 
-	InitialPledgeForPower(abi.StoragePower, abi.TokenAmount, *builtin.FilterEstimate, abi.TokenAmount) (abi.TokenAmount, error)
+	// InitialPledgeForPower computes the pledge requirement for committing new quality-adjusted power
+	// to the network, given the current network total and baseline power, per-epoch  reward, and
+	// circulating token supply.
+	//
+	// Prior to actors version 15, the epochsSinceRampStart and rampDurationEpochs arguments have
+	// no effect. After actors version 15, these values can be derived from the power actor state
+	// properties RampStartEpoch and RampDurationEpochs.
+	InitialPledgeForPower(qaPower abi.StoragePower, networkTotalPledge abi.TokenAmount, networkQAPower *builtin.FilterEstimate, circSupply abi.TokenAmount, epochsSinceRampStart int64, rampDurationEpochs uint64) (abi.TokenAmount, error)
 	PreCommitDepositForPower(builtin.FilterEstimate, abi.StoragePower) (abi.TokenAmount, error)
 }
 
 type AwardBlockRewardParams = reward0.AwardBlockRewardParams
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{
+		(&state0{}).Code(),
+		(&state2{}).Code(),
+		(&state3{}).Code(),
+		(&state4{}).Code(),
+		(&state5{}).Code(),
+		(&state6{}).Code(),
+		(&state7{}).Code(),
+		(&state8{}).Code(),
+		(&state9{}).Code(),
+		(&state10{}).Code(),
+		(&state11{}).Code(),
+		(&state12{}).Code(),
+		(&state13{}).Code(),
+		(&state14{}).Code(),
+		(&state15{}).Code(),
+	}
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+		actorstypes.Version0:  (&state0{}).Code(),
+		actorstypes.Version2:  (&state2{}).Code(),
+		actorstypes.Version3:  (&state3{}).Code(),
+		actorstypes.Version4:  (&state4{}).Code(),
+		actorstypes.Version5:  (&state5{}).Code(),
+		actorstypes.Version6:  (&state6{}).Code(),
+		actorstypes.Version7:  (&state7{}).Code(),
+		actorstypes.Version8:  (&state8{}).Code(),
+		actorstypes.Version9:  (&state9{}).Code(),
+		actorstypes.Version10: (&state10{}).Code(),
+		actorstypes.Version11: (&state11{}).Code(),
+		actorstypes.Version12: (&state12{}).Code(),
+		actorstypes.Version13: (&state13{}).Code(),
+		actorstypes.Version14: (&state14{}).Code(),
+		actorstypes.Version15: (&state15{}).Code(),
+	}
+}

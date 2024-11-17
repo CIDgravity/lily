@@ -3,19 +3,23 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 
+	backoff "github.com/cenkalti/backoff/v4"
 	"github.com/go-pg/pg/v10"
 	"github.com/go-pg/pg/v10/orm"
 	"github.com/go-pg/pg/v10/types"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/raulk/clock"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/model"
+	"github.com/filecoin-project/lily/model/actordumps"
+	"github.com/filecoin-project/lily/model/actors/builtinactor"
 	"github.com/filecoin-project/lily/model/actors/common"
+	"github.com/filecoin-project/lily/model/actors/datacap"
 	init_ "github.com/filecoin-project/lily/model/actors/init"
 	"github.com/filecoin-project/lily/model/actors/market"
 	"github.com/filecoin-project/lily/model/actors/miner"
@@ -26,28 +30,35 @@ import (
 	"github.com/filecoin-project/lily/model/blocks"
 	"github.com/filecoin-project/lily/model/chain"
 	"github.com/filecoin-project/lily/model/derived"
+	"github.com/filecoin-project/lily/model/fevm"
 	"github.com/filecoin-project/lily/model/messages"
 	"github.com/filecoin-project/lily/model/msapprovals"
+	"github.com/filecoin-project/lily/model/visor"
 	"github.com/filecoin-project/lily/schemas"
 )
 
 // Note this list is manually updated. Its only significant use is to verify schema compatibility
 // between the version of lily being used and the database being written to.
-var models = []interface{}{
+var Models = []interface{}{
 	(*blocks.BlockHeader)(nil),
 	(*blocks.BlockParent)(nil),
 	(*blocks.DrandBlockEntrie)(nil),
 
+	(*datacap.DataCapBalance)(nil),
+
+	(*miner.MinerBeneficiary)(nil),
 	(*miner.MinerSectorDeal)(nil),
 	(*miner.MinerSectorInfoV7)(nil),
 	(*miner.MinerSectorInfoV1_6)(nil),
 	(*miner.MinerSectorPost)(nil),
 	(*miner.MinerPreCommitInfo)(nil),
+	(*miner.MinerPreCommitInfoV9)(nil),
 	(*miner.MinerSectorEvent)(nil),
 	(*miner.MinerCurrentDeadlineInfo)(nil),
 	(*miner.MinerFeeDebt)(nil),
 	(*miner.MinerLockedFund)(nil),
 	(*miner.MinerInfo)(nil),
+	(*miner.MinerSectorDealV2)(nil),
 
 	(*market.MarketDealProposal)(nil),
 	(*market.MarketDealState)(nil),
@@ -59,6 +70,10 @@ var models = []interface{}{
 	(*messages.ParsedMessage)(nil),
 	(*messages.InternalMessage)(nil),
 	(*messages.InternalParsedMessage)(nil),
+	(*messages.VMMessage)(nil),
+	(*messages.ActorEvent)(nil),
+	(*messages.MessageParam)(nil),
+	(*messages.ReceiptReturn)(nil),
 
 	(*multisig.MultisigTransaction)(nil),
 
@@ -70,17 +85,29 @@ var models = []interface{}{
 	(*common.Actor)(nil),
 	(*common.ActorState)(nil),
 
-	(*init_.IdAddress)(nil),
+	(*init_.IDAddress)(nil),
 
 	(*derived.GasOutputs)(nil),
 
 	(*chain.ChainEconomics)(nil),
+	(*chain.ChainEconomicsV2)(nil),
 	(*chain.ChainConsensus)(nil),
 
 	(*msapprovals.MultisigApproval)(nil),
 
 	(*verifreg.VerifiedRegistryVerifier)(nil),
 	(*verifreg.VerifiedRegistryVerifiedClient)(nil),
+	(*verifreg.VerifiedRegistryClaim)(nil),
+
+	(*fevm.FEVMActorStats)(nil),
+	(*fevm.FEVMBlockHeader)(nil),
+	(*fevm.FEVMReceipt)(nil),
+	(*fevm.FEVMTransaction)(nil),
+	(*fevm.FEVMContract)(nil),
+	(*fevm.FEVMTrace)(nil),
+	(*actordumps.FEVMActorDump)(nil),
+	(*actordumps.MinerActorDump)(nil),
+	(*builtinactor.BuiltInActorEvent)(nil),
 }
 
 var log = logging.Logger("lily/storage")
@@ -92,27 +119,27 @@ var (
 
 var (
 	ErrSchemaTooOld = errors.New("database schema is too old and requires migration")
-	ErrSchemaTooNew = errors.New("database schema is too new for this version of visor")
+	ErrSchemaTooNew = errors.New("database schema is too new for this version of lily")
 	ErrNameTooLong  = errors.New("name exceeds maximum length for postgres application names")
 )
 
 const MaxPostgresNameLength = 64
 
-func NewDatabase(ctx context.Context, url string, poolSize int, name string, schemaName string, upsert bool) (*Database, error) {
+func NewDatabase(_ context.Context, url string, poolSize int, name string, schemaName string, upsert bool) (*Database, error) {
 	if len(name) > MaxPostgresNameLength {
 		return nil, ErrNameTooLong
 	}
 
 	opt, err := pg.ParseURL(url)
 	if err != nil {
-		return nil, xerrors.Errorf("parse database URL: %w", err)
+		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
 	opt.PoolSize = poolSize
 	if opt.ApplicationName == "" {
 		opt.ApplicationName = name
 	}
 
-	onConnect := func(ctx context.Context, conn *pg.Conn) error {
+	onConnect := func(_ context.Context, conn *pg.Conn) error {
 		_, err := conn.Exec("set search_path=?", schemaName)
 		if err != nil {
 			log.Errorf("failed to set postgresql search_path: %v", err)
@@ -178,7 +205,7 @@ type Database struct {
 func (d *Database) Connect(ctx context.Context) error {
 	db, err := connect(ctx, d.opt)
 	if err != nil {
-		return xerrors.Errorf("connect: %w", err)
+		return fmt.Errorf("connect: %w", err)
 	}
 
 	dbVersion, err := validateDatabaseSchemaVersion(ctx, db, d.SchemaConfig())
@@ -206,14 +233,22 @@ func connect(ctx context.Context, opt *pg.Options) (*pg.DB, error) {
 	// db.AddQueryHook(&pgext.OpenTelemetryHook{})
 
 	// Check if connection credentials are valid and PostgreSQL is up and running.
-	if err := db.Ping(ctx); err != nil {
-		return nil, xerrors.Errorf("ping database: %w", err)
+	operation := func() error {
+		if err := db.Ping(ctx); err != nil {
+			return fmt.Errorf("ping database: %w", err)
+		}
+		return nil
+	}
+
+	retryErr := backoff.Retry(operation, backoff.NewExponentialBackOff())
+	if retryErr != nil {
+		return nil, fmt.Errorf("ping database retry attempt: %w", retryErr)
 	}
 
 	// Acquire a shared lock on the schema to notify other instances that we are running
 	if err := SchemaLock.LockShared(ctx, db); err != nil {
 		_ = db.Close() // nolint: errcheck
-		return nil, xerrors.Errorf("failed to acquire schema lock, possible migration in progress: %w", err)
+		return nil, fmt.Errorf("failed to acquire schema lock, possible migration in progress: %w", err)
 	}
 
 	return db, nil
@@ -257,7 +292,7 @@ func (d *Database) VerifyCurrentSchema(ctx context.Context) error {
 	// Temporarily connect
 	db, err := connect(ctx, d.opt)
 	if err != nil {
-		return xerrors.Errorf("connect: %w", err)
+		return fmt.Errorf("connect: %w", err)
 	}
 	defer db.Close() // nolint: errcheck
 	return verifyCurrentSchema(ctx, db, d.SchemaConfig())
@@ -270,19 +305,19 @@ func verifyCurrentSchema(ctx context.Context, db *pg.DB, cfg schemas.Config) err
 
 	version, initialized, err := getDatabaseSchemaVersion(ctx, db, cfg)
 	if err != nil {
-		return xerrors.Errorf("get schema version: %w", err)
+		return fmt.Errorf("get schema version: %w", err)
 	}
 
 	if !initialized {
-		return xerrors.Errorf("schema not installed in database")
+		return fmt.Errorf("schema not installed in database")
 	}
 
 	valid := true
-	for _, model := range models {
+	for _, model := range Models {
 		if vm, ok := model.(versionable); ok {
 			m, ok := vm.AsVersion(version)
 			if !ok {
-				return xerrors.Errorf("model %T does not support version %s", model, version)
+				return fmt.Errorf("model %T does not support version %s", model, version)
 			}
 			model = m
 		}
@@ -298,7 +333,7 @@ func verifyCurrentSchema(ctx context.Context, db *pg.DB, cfg schemas.Config) err
 
 	}
 	if !valid {
-		return xerrors.Errorf("database schema was not compatible with current models")
+		return fmt.Errorf("database schema was not compatible with current models")
 	}
 	return nil
 }
@@ -308,10 +343,10 @@ func verifyModel(ctx context.Context, db *pg.DB, schemaName string, m *orm.Table
 
 	exists, err := tableExists(ctx, db, schemaName, tableName)
 	if err != nil {
-		return xerrors.Errorf("querying table: %v", err)
+		return fmt.Errorf("querying table: %v", err)
 	}
 	if !exists {
-		return xerrors.Errorf("required table %s not found", m.SQLName)
+		return fmt.Errorf("required table %s not found", m.SQLName)
 	}
 
 	for _, fld := range m.Fields {
@@ -319,29 +354,32 @@ func verifyModel(ctx context.Context, db *pg.DB, schemaName string, m *orm.Table
 		_, err := db.QueryOne(pg.Scan(&datatype), `SELECT data_type FROM information_schema.columns WHERE table_schema=? AND table_name=? AND column_name=?`, schemaName, tableName, fld.SQLName)
 		if err != nil {
 			if errors.Is(err, pg.ErrNoRows) {
-				return xerrors.Errorf("required column %s.%s not found", tableName, fld.SQLName)
+				return fmt.Errorf("required column %s.%s not found", tableName, fld.SQLName)
 			}
-			return xerrors.Errorf("querying field: %v %T", err, err)
+			return fmt.Errorf("querying field: %v %T", err, err)
 		}
 		if datatype == "USER-DEFINED" {
 			_, err := db.QueryOne(pg.Scan(&datatype), `SELECT udt_name FROM information_schema.columns WHERE table_schema=? AND table_name=? AND column_name=?`, schemaName, tableName, fld.SQLName)
 			if err != nil {
 				if errors.Is(err, pg.ErrNoRows) {
-					return xerrors.Errorf("required column %s.%s not found", tableName, fld.SQLName)
+					return fmt.Errorf("required column %s.%s not found", tableName, fld.SQLName)
 				}
-				return xerrors.Errorf("querying field: %v %T", err, err)
+				return fmt.Errorf("querying field: %v %T", err, err)
 			}
 		}
 
 		// Some common aliases
-		if datatype == "timestamp with time zone" {
+		switch datatype {
+		case "timestamp with time zone":
+			fallthrough
+		case "timestamp without time zone":
 			datatype = "timestamptz"
-		} else if datatype == "timestamp without time zone" {
-			datatype = "timestamp"
+		case "ARRAY":
+			datatype = "bigint[]"
 		}
 
 		if datatype != fld.SQLType {
-			return xerrors.Errorf("column %s.%s had datatype %s, expected %s", tableName, fld.SQLName, datatype, fld.SQLType)
+			return fmt.Errorf("column %s.%s had datatype %s, expected %s", tableName, fld.SQLName, datatype, fld.SQLType)
 		}
 
 	}
@@ -353,7 +391,7 @@ func tableExists(ctx context.Context, db *pg.DB, schemaName string, tableName st
 	var exists bool
 	_, err := db.QueryOneContext(ctx, pg.Scan(&exists), `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema=? AND table_name=?)`, schemaName, tableName)
 	if err != nil {
-		return false, xerrors.Errorf("querying table: %v", err)
+		return false, fmt.Errorf("querying table: %v", err)
 	}
 
 	return exists, nil
@@ -373,7 +411,7 @@ func (d *Database) PersistBatch(ctx context.Context, ps ...model.Persistable) er
 
 		for _, p := range ps {
 			if err := p.Persist(ctx, txs, d.version); err != nil {
-				return err
+				return fmt.Errorf("persisting %T: %w", p, err)
 			}
 		}
 
@@ -413,19 +451,28 @@ func (s *TxStorage) PersistModel(ctx context.Context, m interface{}) error {
 		}
 
 	}
+
+	// Prepare the conflict and upsert sql string
+	conflict := ""
+	upsert := ""
 	if s.upsert {
-		conflict, upsert := GenerateUpsertStrings(m)
+		conflict, upsert = GenerateUpsertStrings(m)
+	}
+
+	// If the upsert string is left blank, indicating that all fields serve as primary keys.
+	// In such a case, proceed with the standard insert process.
+	if s.upsert && len(upsert) > 0 {
 		if _, err := s.tx.ModelContext(ctx, m).
 			OnConflict(conflict).
 			Set(upsert).
 			Insert(); err != nil {
-			return xerrors.Errorf("upserting model: %w", err)
+			return fmt.Errorf("upserting model: %w", err)
 		}
 	} else {
 		if _, err := s.tx.ModelContext(ctx, m).
 			OnConflict("do nothing").
 			Insert(); err != nil {
-			return xerrors.Errorf("persisting model: %w", err)
+			return fmt.Errorf("persisting model: %w", err)
 		}
 	}
 	return nil
@@ -436,19 +483,22 @@ func (s *TxStorage) PersistModel(ctx context.Context, m interface{}) error {
 //
 // Example given the below model:
 //
-// type SomeModel struct {
-// 	Height    int64  `pg:",pk,notnull,use_zero"`
-// 	MinerID   string `pg:",pk,notnull"`
-// 	StateRoot string `pg:",pk,notnull"`
-// 	OwnerID  string `pg:",notnull"`
-// 	WorkerID string `pg:",notnull"`
-// }
+//	type SomeModel struct {
+//		Height    int64  `pg:",pk,notnull,use_zero"`
+//		MinerID   string `pg:",pk,notnull"`
+//		StateRoot string `pg:",pk,notnull"`
+//		OwnerID  string `pg:",notnull"`
+//		WorkerID string `pg:",notnull"`
+//	}
 //
 // The strings returned are:
 // conflict string:
+//
 //	"(cid, height, state_root) DO UPDATE"
+//
 // update string:
-// 	"owner_id" = EXCLUDED.owner_id, "worker_id" = EXCLUDED.worker_id
+//
+//	"owner_id" = EXCLUDED.owner_id, "worker_id" = EXCLUDED.worker_id
 func GenerateUpsertStrings(model interface{}) (string, string) {
 	var cf []string
 	var ucf []string
@@ -488,4 +538,62 @@ func GenerateUpsertStrings(model interface{}) (string, string) {
 		}
 	}
 	return conflict.String(), upsert.String()
+}
+
+// returns a map of heights to missing tasks, and a list of heights to iterate the map in order with.
+func (d *Database) ConsolidateGaps(ctx context.Context, minHeight, maxHeight int64, tasks ...string) (map[int64][]string, []int64, error) {
+	gaps, err := d.QueryGaps(ctx, minHeight, maxHeight, tasks...)
+	if err != nil {
+		return nil, nil, err
+	}
+	// used to walk gaps in order, should help optimize some caching.
+	heights := make([]int64, 0, len(gaps))
+	out := make(map[int64][]string)
+	for _, gap := range gaps {
+		if _, ok := out[gap.Height]; !ok {
+			heights = append(heights, gap.Height)
+		}
+		out[gap.Height] = append(out[gap.Height], gap.Task)
+	}
+	sort.Slice(heights, func(i, j int) bool {
+		return heights[i] < heights[j]
+	})
+	return out, heights, nil
+}
+
+func (d *Database) QueryGaps(ctx context.Context, minHeight, maxHeight int64, tasks ...string) ([]*visor.GapReport, error) {
+	var out []*visor.GapReport
+	if len(tasks) != 0 {
+		if err := d.AsORM().ModelContext(ctx, &out).
+			Order("height desc").
+			Where("status = ?", "GAP").
+			Where("task = ANY (?)", pg.Array(tasks)).
+			Where("height >= ?", minHeight).
+			Where("height <= ?", maxHeight).
+			Select(); err != nil {
+			return nil, fmt.Errorf("querying gap reports: %w", err)
+		}
+	} else {
+		if err := d.AsORM().ModelContext(ctx, &out).
+			Order("height desc").
+			Where("status = ?", "GAP").
+			Where("height >= ?", minHeight).
+			Where("height <= ?", maxHeight).
+			Select(); err != nil {
+			return nil, fmt.Errorf("querying gap reports: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// mark all gaps at height as filled.
+func (d *Database) SetGapsFilled(ctx context.Context, height int64, tasks ...string) error {
+	if _, err := d.AsORM().ModelContext(ctx, &visor.GapReport{}).
+		Set("status = 'FILLED'").
+		Where("height = ?", height).
+		Where("task = ANY (?)", pg.Array(tasks)).
+		Update(); err != nil {
+		return err
+	}
+	return nil
 }

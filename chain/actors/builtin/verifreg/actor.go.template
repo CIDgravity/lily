@@ -2,66 +2,96 @@
 package verifreg
 
 import (
+    "fmt"
 	"github.com/ipfs/go-cid"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/filecoin-project/go-state-types/cbor"
 {{range .versions}}
-	builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
-{{- end}}
+    {{if (le . 7)}}
+	    builtin{{.}} "github.com/filecoin-project/specs-actors{{import .}}actors/builtin"
+    {{end}}
+{{end}}
+    builtin{{.latestVersion}} "github.com/filecoin-project/go-state-types/builtin"
 
+	lotusactors "github.com/filecoin-project/lotus/chain/actors"
 	"github.com/filecoin-project/lotus/chain/types"
+	verifregtypes "github.com/filecoin-project/go-state-types/builtin/v9/verifreg"
+	verifregtypes12 "github.com/filecoin-project/go-state-types/builtin/v12/verifreg"
+
 
 	"github.com/filecoin-project/lily/chain/actors/adt"
-	"github.com/filecoin-project/lily/chain/actors/builtin"
-)
 
-func init() {
-{{range .versions}}
-	builtin.RegisterActorState(builtin{{.}}.VerifiedRegistryActorCodeID, func(store adt.Store, root cid.Cid) (cbor.Marshaler, error) {
-		return load{{.}}(store, root)
-	})
-{{end}}
-}
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
+)
 
 var (
 	Address = builtin{{.latestVersion}}.VerifiedRegistryActorAddr
 	Methods = builtin{{.latestVersion}}.MethodsVerifiedRegistry
 )
 
-func AllCodes() []cid.Cid {
-	return []cid.Cid{ {{range .versions}}
-        builtin{{.}}.VerifiedRegistryActorCodeID,
-    {{- end}}
-    }
-}
-
 func Load(store adt.Store, act *types.Actor) (State, error) {
+	if name, av, ok := lotusactors.GetActorMetaByCode(act.Code); ok {
+       if name != manifest.VerifregKey {
+          return nil, fmt.Errorf("actor code is not verifreg: %s", name)
+       }
+
+       switch actorstypes.Version(av) {
+            {{range .versions}}
+                {{if (ge . 8)}}
+                case actorstypes.Version{{.}}:
+                     return load{{.}}(store, act.Head)
+                 {{end}}
+            {{end}}
+       }
+	}
+
 	switch act.Code {
 {{range .versions}}
-	case builtin{{.}}.VerifiedRegistryActorCodeID:
-		return load{{.}}(store, act.Head)
+    {{if (le . 7)}}
+        case builtin{{.}}.VerifiedRegistryActorCodeID:
+            return load{{.}}(store, act.Head)
+    {{end}}
 {{end}}
 	}
-	return nil, xerrors.Errorf("unknown actor code %s", act.Code)
+
+	return nil, fmt.Errorf("unknown actor code %s", act.Code)
 }
 
 type State interface {
 	cbor.Marshaler
 
 	Code() cid.Cid
+	ActorKey() string
+	ActorVersion() actorstypes.Version
+
+	VerifiersMap() (adt.Map, error)
+	VerifiersMapBitWidth() int
+	VerifiersMapHashFunction() func(input []byte) []byte
+
+	VerifiedClientsMap() (adt.Map, error)
+	VerifiedClientsMapBitWidth() int
+	VerifiedClientsMapHashFunction() func(input []byte) []byte
 
 	RootKey() (address.Address, error)
 	VerifiedClientDataCap(address.Address) (bool, abi.StoragePower, error)
 	VerifierDataCap(address.Address) (bool, abi.StoragePower, error)
+	RemoveDataCapProposalID(verifier address.Address, client address.Address) (bool, uint64, error)
 	ForEachVerifier(func(addr address.Address, dcap abi.StoragePower) error) error
 	ForEachClient(func(addr address.Address, dcap abi.StoragePower) error) error
+	GetAllocation(clientIdAddr address.Address, allocationId verifregtypes.AllocationId) (*verifregtypes.Allocation, bool, error)
+	GetAllocations(clientIdAddr address.Address) (map[verifregtypes.AllocationId]verifregtypes.Allocation, error)
+	GetClaim(providerIdAddr address.Address, claimId verifregtypes.ClaimId) (*verifregtypes.Claim, bool, error)
+	GetClaims(providerIdAddr address.Address) (map[verifregtypes.ClaimId]verifregtypes.Claim, error)
+	GetState() interface{}
 
-	verifiers() (adt.Map, error)
-	verifiedClients() (adt.Map, error)
+	ClaimsMap() (adt.Map, error)
+	ClaimMapForProvider(providerIdAddr address.Address) (adt.Map, error)
+	ClaimsMapBitWidth() int
+	ClaimsMapHashFunction() func(input []byte) []byte
 }
 
 type VerifierInfo struct {
@@ -79,3 +109,36 @@ type VerifierChanges struct {
 	Modified []VerifierChange
 	Removed  []VerifierInfo
 }
+
+func AllCodes() []cid.Cid {
+	return []cid.Cid{ {{range .versions}}
+        (&state{{.}}{}).Code(),
+    {{- end}}
+    }
+}
+
+func VersionCodes() map[actorstypes.Version]cid.Cid {
+	return map[actorstypes.Version]cid.Cid{
+        {{- range .versions}}
+            actorstypes.Version{{.}}: (&state{{.}}{}).Code(),
+        {{- end}}
+	}
+}
+
+type (
+	Allocation = verifregtypes.Allocation
+	AllocationId = verifregtypes.AllocationId
+	Claim = verifregtypes.Claim
+	ClaimId = verifregtypes.ClaimId
+	AllocationRequest = verifregtypes12.AllocationRequest
+	AllocationRequests = verifregtypes12.AllocationRequests
+	RemoveExpiredAllocationsParams = verifregtypes12.RemoveExpiredAllocationsParams
+	AddVerifierParams = verifregtypes12.AddVerifierParams
+	AddVerifiedClientParams = verifregtypes12.AddVerifiedClientParams
+)
+const (
+	NoAllocationID                      = verifregtypes.NoAllocationID
+	MinimumVerifiedAllocationTerm       = verifregtypes12.MinimumVerifiedAllocationTerm
+	MaximumVerifiedAllocationTerm       = verifregtypes12.MaximumVerifiedAllocationTerm
+	MaximumVerifiedAllocationExpiration = verifregtypes12.MaximumVerifiedAllocationExpiration
+)

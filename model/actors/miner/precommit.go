@@ -2,11 +2,11 @@ package miner
 
 import (
 	"context"
-	"go.opentelemetry.io/otel/attribute"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/xerrors"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -34,8 +34,7 @@ type MinerPreCommitInfo struct {
 }
 
 type MinerPreCommitInfoV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"miner_pre_commit_infos"`
+	tableName struct{} `pg:"miner_pre_commit_infos"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	MinerID   string   `pg:",pk,notnull"`
 	SectorID  uint64   `pg:",pk,use_zero"`
@@ -89,12 +88,10 @@ func (mpi *MinerPreCommitInfo) AsVersion(version model.Version) (interface{}, bo
 
 func (mpi *MinerPreCommitInfo) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_pre_commit_infos"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	m, ok := mpi.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("MinerPreCommitInfo not supported for schema version %s", version)
+		return fmt.Errorf("MinerPreCommitInfo not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -111,8 +108,6 @@ func (ml MinerPreCommitInfoList) Persist(ctx context.Context, s model.StorageBat
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_pre_commit_infos"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(ml) == 0 {
 		return nil

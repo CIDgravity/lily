@@ -1,14 +1,19 @@
 package config
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/filecoin-project/lotus/node/config"
+	"github.com/hibiken/asynq"
 	logging "github.com/ipfs/go-log/v2"
-	"golang.org/x/xerrors"
+
+	"github.com/filecoin-project/lily/chain/indexer"
+
+	"github.com/filecoin-project/lotus/node/config"
 )
 
 var log = logging.Logger("lily/config")
@@ -16,9 +21,9 @@ var log = logging.Logger("lily/config")
 // Conf defines the daemon config. It should be compatible with Lotus config.
 type Conf struct {
 	config.Common
-	Client     config.Client
 	Chainstore config.Chainstore
 	Storage    StorageConf
+	Queue      QueueConfig
 }
 
 type StorageConf struct {
@@ -42,6 +47,114 @@ type FileStorageConf struct {
 	FilePattern string // pattern to use for filenames written in the path specified
 }
 
+type QueueConfig struct {
+	Workers   map[string]AsynqWorkerConfig
+	Notifiers map[string]RedisConfig
+}
+
+type AsynqWorkerConfig struct {
+	RedisConfig  RedisConfig
+	WorkerConfig WorkerConfig
+}
+
+type RedisConfig struct {
+	// Network type to use, either tcp or unix.
+	// Default is tcp.
+	Network string
+
+	// Redis server address in "host:port" format.
+	Addr    string
+	AddrEnv string
+
+	// Username to authenticate the current connection when Redis ACLs are used.
+	// See: https://redis.io/commands/auth.
+	Username    string
+	UsernameEnv string
+
+	// Password to authenticate the current connection.
+	// See: https://redis.io/commands/auth.
+	Password    string
+	PasswordEnv string
+
+	// Redis DB to select after connecting to a server.
+	// See: https://redis.io/commands/select.
+	DB int
+
+	// Maximum number of socket connections.
+	// Default is 10 connections per every CPU as reported by runtime.NumCPU.
+	PoolSize int
+}
+
+type WorkerConfig struct {
+	// Maximum number of concurrent processing of tasks.
+	//
+	// If set to a zero or negative value, NewServer will overwrite the value
+	// to the number of CPUs usable by the current process.
+	Concurrency int
+
+	// LogLevel specifies the minimum log level to enable.
+	//
+	// If unset, InfoLevel is used by default.
+	LoggerLevel string
+
+	// Priority is treated as follows to avoid starving low priority queues.
+	//
+	// Example:
+	//
+	//	 WatchQueuePriority: 	5
+	//	 FillQueuePriority:		3
+	//	 IndexQueuePriority:	1
+	//	 WalkQueuePriority: 	1
+	//
+	// With the above config and given that all queues are not empty, the tasks
+	// in "watch", "fill", "index", "walk" should be processed 50%, 30%, 10%, 10% of
+	// the time respectively.
+	WatchQueuePriority int
+	FillQueuePriority  int
+	IndexQueuePriority int
+	WalkQueuePriority  int
+
+	// StrictPriority indicates whether the queue priority should be treated strictly.
+	//
+	// If set to true, tasks in the queue with the highest priority is processed first.
+	// The tasks in lower priority queues are processed only when those queues with
+	// higher priorities are empty.
+	StrictPriority bool
+
+	// ShutdownTimeout specifies the duration to wait to let workers finish their tasks
+	// before forcing them to abort when stopping the server.
+	//
+	// If unset or zero, default timeout of 8 seconds is used.
+	ShutdownTimeout time.Duration
+}
+
+func (q WorkerConfig) Queues() map[string]int {
+	return map[string]int{
+		indexer.Watch.String(): q.WatchQueuePriority,
+		indexer.Fill.String():  q.FillQueuePriority,
+		indexer.Index.String(): q.IndexQueuePriority,
+		indexer.Walk.String():  q.WalkQueuePriority,
+	}
+}
+
+func (q WorkerConfig) LogLevel() asynq.LogLevel {
+	switch strings.ToLower(q.LoggerLevel) {
+	case "debug":
+		return asynq.DebugLevel
+	case "info":
+		return asynq.InfoLevel
+	case "warn":
+		return asynq.WarnLevel
+	case "error":
+		return asynq.ErrorLevel
+	case "fatal":
+		return asynq.FatalLevel
+	default:
+		log.Warnf("invalid log level given (%s) defaulting to level 'INFO'", q.LoggerLevel)
+		return asynq.InfoLevel
+	}
+}
+
 func DefaultConf() *Conf {
 	return &Conf{
 		Common: config.Common{
@@ -49,27 +162,6 @@ func DefaultConf() *Conf {
 				ListenAddress: "/ip4/127.0.0.1/tcp/1234/http",
 				Timeout:       config.Duration(30 * time.Second),
 			},
-			Libp2p: config.Libp2p{
-				ListenAddresses: []string{
-					"/ip4/0.0.0.0/tcp/0",
-					"/ip6/::/tcp/0",
-				},
-				AnnounceAddresses:   []string{},
-				NoAnnounceAddresses: []string{},
-
-				ConnMgrLow:   150,
-				ConnMgrHigh:  180,
-				ConnMgrGrace: config.Duration(20 * time.Second),
-			},
-			Pubsub: config.Pubsub{
-				Bootstrapper: false,
-				DirectPeers:  nil,
-				RemoteTracer: "/dns4/pubsub-tracer.filecoin.io/tcp/4001/p2p/QmTd6UvR47vUidRNZ1ZKXHrAFhqTJAD27rKL9XYghEKgKX",
-			},
-		},
-		Client: config.Client{
-			SimultaneousTransfersForStorage:   config.DefaultSimultaneousTransfers,
-			SimultaneousTransfersForRetrieval: config.DefaultSimultaneousTransfers,
 		},
 	}
 }
@@ -107,6 +199,42 @@ func SampleConf() *Conf {
 			},
 		},
 	}
+	cfg.Queue = QueueConfig{
+		Workers: map[string]AsynqWorkerConfig{
+			"Worker1": {
+				RedisConfig: RedisConfig{
+					Network:     "tcp",
+					Addr:        "127.0.0.1:6379",
+					Username:    "",
+					Password:    "",
+					PasswordEnv: "LILY_ASYNQ_REDIS_PASSWORD",
+					DB:          0,
+					PoolSize:    0,
+				},
+				WorkerConfig: WorkerConfig{
+					Concurrency:        1,
+					LoggerLevel:        "debug",
+					WatchQueuePriority: 5,
+					FillQueuePriority:  3,
+					IndexQueuePriority: 1,
+					WalkQueuePriority:  1,
+					StrictPriority:     false,
+					ShutdownTimeout:    time.Second * 30,
+				},
+			},
+		},
+		Notifiers: map[string]RedisConfig{
+			"Notifier1": {
+				Network:     "tcp",
+				Addr:        "127.0.0.1:6379",
+				Username:    "",
+				Password:    "",
+				PasswordEnv: "LILY_ASYNQ_REDIS_PASSWORD",
+				DB:          0,
+				PoolSize:    0,
+			},
+		},
+	}
 
 	return &cfg
 }
@@ -123,19 +251,18 @@ func EnsureExists(path string) error {
 	if err != nil {
 		return err
 	}
-
-	comm, err := config.ConfigComment(SampleConf())
+	comm, err := config.ConfigUpdate(SampleConf(), nil, config.Commented(false))
 	if err != nil {
-		return xerrors.Errorf("comment: %w", err)
+		return fmt.Errorf("comment: %w", err)
 	}
 	_, err = c.Write(comm)
 	if err != nil {
 		_ = c.Close() // ignore error since we are recovering from a write error anyway
-		return xerrors.Errorf("write config: %w", err)
+		return fmt.Errorf("write config: %w", err)
 	}
 
 	if err := c.Close(); err != nil {
-		return xerrors.Errorf("close config: %w", err)
+		return fmt.Errorf("close config: %w", err)
 	}
 	return nil
 }
@@ -159,8 +286,7 @@ func FromFile(path string) (*Conf, error) {
 // FromReader loads config from a reader instance.
 func FromReader(reader io.Reader, def *Conf) (*Conf, error) {
 	cfg := *def
-	_, err := toml.DecodeReader(reader, &cfg)
-	if err != nil {
+	if _, err := toml.NewDecoder(reader).Decode(&cfg); err != nil {
 		return nil, err
 	}
 

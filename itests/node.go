@@ -2,6 +2,14 @@ package itests
 
 import (
 	"context"
+	"io"
+	"io/fs"
+	"testing"
+
+	"github.com/multiformats/go-multiaddr"
+	"github.com/stretchr/testify/require"
+
+	"github.com/filecoin-project/lily/chain/indexer/distributed"
 	"github.com/filecoin-project/lily/commands"
 	"github.com/filecoin-project/lily/commands/util"
 	"github.com/filecoin-project/lily/config"
@@ -10,6 +18,7 @@ import (
 	lutil "github.com/filecoin-project/lily/lens/util"
 	"github.com/filecoin-project/lily/schedule"
 	"github.com/filecoin-project/lily/storage"
+
 	"github.com/filecoin-project/lotus/chain/events"
 	"github.com/filecoin-project/lotus/chain/stmgr"
 	"github.com/filecoin-project/lotus/lib/peermgr"
@@ -17,11 +26,6 @@ import (
 	lotusmodules "github.com/filecoin-project/lotus/node/modules"
 	"github.com/filecoin-project/lotus/node/modules/dtypes"
 	"github.com/filecoin-project/lotus/node/repo"
-	"github.com/multiformats/go-multiaddr"
-	"github.com/stretchr/testify/require"
-	"io/fs"
-	"io/ioutil"
-	"testing"
 )
 
 type TestNodeConfig struct {
@@ -30,10 +34,10 @@ type TestNodeConfig struct {
 	RepoPath    string
 	Snapshot    fs.File
 	Genesis     fs.File
-	ApiEndpoint string
+	APIEndpoint string
 }
 
-func NewTestNode(t testing.TB, ctx context.Context, cfg *TestNodeConfig) (lily.LilyAPI, node.StopFunc) {
+func NewTestNode(ctx context.Context, t testing.TB, cfg *TestNodeConfig) (lily.LilyAPI, node.StopFunc) {
 	r, err := repo.NewFS(cfg.RepoPath)
 	require.NoError(t, err)
 
@@ -42,8 +46,7 @@ func NewTestNode(t testing.TB, ctx context.Context, cfg *TestNodeConfig) (lily.L
 
 	err = util.ImportFromFsFile(ctx, r, cfg.Snapshot, true)
 	require.NoError(t, err)
-
-	genBytes, err := ioutil.ReadAll(cfg.Genesis)
+	genBytes, err := io.ReadAll(cfg.Genesis)
 	require.NoError(t, err)
 
 	genesis := node.Options()
@@ -65,6 +68,7 @@ func NewTestNode(t testing.TB, ctx context.Context, cfg *TestNodeConfig) (lily.L
 		node.Override(new(*events.Events), modules.NewEvents),
 		node.Override(new(*schedule.Scheduler), schedule.NewSchedulerDaemon),
 		node.Override(new(*storage.Catalog), modules.NewStorageCatalog),
+		node.Override(new(*distributed.Catalog), modules.NewQueueCatalog),
 		// End Injection
 
 		node.Override(new(dtypes.Bootstrapper), false),
@@ -86,7 +90,7 @@ func NewTestNode(t testing.TB, ctx context.Context, cfg *TestNodeConfig) (lily.L
 		node.Unset(new(*peermgr.PeerMgr)),
 
 		node.Override(node.SetApiEndpointKey, func(lr repo.LockedRepo) error {
-			apima, err := multiaddr.NewMultiaddr(cfg.ApiEndpoint)
+			apima, err := multiaddr.NewMultiaddr(cfg.APIEndpoint)
 			if err != nil {
 				return err
 			}

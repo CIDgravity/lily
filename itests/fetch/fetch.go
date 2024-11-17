@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,19 +16,17 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/multierr"
-	"golang.org/x/xerrors"
-	"gopkg.in/cheggaaa/pb.v1"
-
 	fslock "github.com/ipfs/go-fs-lock"
 	logging "github.com/ipfs/go-log/v2"
+	"go.uber.org/multierr"
+	"gopkg.in/cheggaaa/pb.v1"
 )
 
 // Ported from github.com/filecoin-project/go-paramfetch
 
 var log = logging.Logger("lily/vectors")
 
-const gateway = "https://dweb.link/ipfs/"
+const gateway = "https://ipfs.w3s.link/ipfs/"
 const lockFile = "fetch.lock"
 const vectordir = "/var/tmp/lily-test-vectors"
 const vectordirenv = "LILY_TEST_VECTORS"
@@ -114,12 +114,12 @@ func (ft *fetch) fetchAsync(ctx context.Context, vectorTar, vectorDir string, in
 			lockfail = true
 
 			le := fslock.LockedError("")
-			if xerrors.As(err, &le) {
+			if errors.As(err, &le) {
 				log.Warnf("acquiring filesystem fetch lock: %s; will retry in %s", err, lockRetry)
 				time.Sleep(lockRetry)
 				continue
 			}
-			ft.errs = append(ft.errs, xerrors.Errorf("acquiring filesystem fetch lock: %w", err))
+			ft.errs = append(ft.errs, fmt.Errorf("acquiring filesystem fetch lock: %w", err))
 			return
 		}
 		defer func() {
@@ -135,15 +135,14 @@ func (ft *fetch) fetchAsync(ctx context.Context, vectorTar, vectorDir string, in
 		}
 
 		if err := doFetch(ctx, path, info); err != nil {
-			ft.errs = append(ft.errs, xerrors.Errorf("fetching file %s failed: %w", path, err))
+			ft.errs = append(ft.errs, fmt.Errorf("fetching file %s failed: %w", path, err))
 			return
 		}
-		ft.checkFile(path, info)
-		if err != nil {
-			ft.errs = append(ft.errs, xerrors.Errorf("checking file %s failed: %w", path, err))
+		if err := ft.checkFile(path, info); err != nil {
+			ft.errs = append(ft.errs, fmt.Errorf("checking file %s failed: %w", path, err))
 			err := os.Remove(path)
 			if err != nil {
-				ft.errs = append(ft.errs, xerrors.Errorf("remove file %s failed: %w", path, err))
+				ft.errs = append(ft.errs, fmt.Errorf("remove file %s failed: %w", path, err))
 			}
 		}
 	}()
@@ -179,7 +178,7 @@ func (ft *fetch) checkFile(path string, info VectorFile) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() // nolint: errcheck
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -198,7 +197,7 @@ func (ft *fetch) checkFile(path string, info VectorFile) error {
 		return nil
 	}
 
-	return xerrors.Errorf("checksum mismatch in test vector file %s, %s != %s", path, strSum, info.Digest)
+	return fmt.Errorf("checksum mismatch in test vector file %s, %s != %s", path, strSum, info.Digest)
 }
 
 func doFetch(ctx context.Context, out string, info VectorFile) error {
@@ -212,7 +211,7 @@ func doFetch(ctx context.Context, out string, info VectorFile) error {
 	if err != nil {
 		return err
 	}
-	defer outf.Close()
+	defer outf.Close() // nolint: errcheck
 
 	fStat, err := outf.Stat()
 	if err != nil {
@@ -237,7 +236,7 @@ func doFetch(ctx context.Context, out string, info VectorFile) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() // nolint: errcheck
 
 	bar := pb.New64(fStat.Size() + resp.ContentLength)
 	bar.Set64(fStat.Size())

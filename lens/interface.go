@@ -2,27 +2,32 @@ package lens
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/filecoin-project/lotus/node/modules/dtypes"
+	"github.com/ipfs/go-cid"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
+	"github.com/filecoin-project/go-state-types/exitcode"
+	"github.com/filecoin-project/specs-actors/actors/util/adt"
+
 	"github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/chain/types"
+	"github.com/filecoin-project/lotus/chain/types/ethtypes"
 	"github.com/filecoin-project/lotus/chain/vm"
-	"github.com/filecoin-project/specs-actors/actors/util/adt"
-	"github.com/ipfs/go-cid"
+	"github.com/filecoin-project/lotus/node/modules/dtypes"
 )
 
 type API interface {
 	StoreAPI
 	ChainAPI
 	StateAPI
+	VMAPI
+	EthModuleAPI
+	ActorEventAPI
 
-	GetExecutedAndBlockMessagesForTipset(ctx context.Context, ts, pts *types.TipSet) (*TipSetMessages, error)
 	GetMessageExecutionsForTipSet(ctx context.Context, ts, pts *types.TipSet) ([]*MessageExecution, error)
 }
-
 type StoreAPI interface {
 	// TODO this should be the lotus store not the specs-actors store.
 	Store() adt.Store
@@ -42,27 +47,48 @@ type ChainAPI interface {
 
 	ChainGetBlockMessages(ctx context.Context, msg cid.Cid) (*api.BlockMessages, error)
 	ChainGetParentMessages(ctx context.Context, blockCid cid.Cid) ([]api.Message, error)
-	ChainGetParentReceipts(ctx context.Context, blockCid cid.Cid) ([]*types.MessageReceipt, error)
+	ChainGetMessagesInTipset(ctx context.Context, tsk types.TipSetKey) ([]api.Message, error)
+
+	ComputeBaseFee(ctx context.Context, ts *types.TipSet) (abi.TokenAmount, error)
+
+	MessagesForTipSetBlocks(ctx context.Context, ts *types.TipSet) ([]*BlockMessages, error)
+	TipSetMessageReceipts(ctx context.Context, ts, pts *types.TipSet) ([]*BlockMessageReceipts, error)
+	MessagesWithDeduplicationForTipSet(ctx context.Context, ts *types.TipSet) (map[cid.Cid]types.ChainMsg, error)
+
+	// added during hyperspace
+	ChainGetEvents(ctx context.Context, root cid.Cid) ([]types.Event, error)
 }
 
 type StateAPI interface {
 	StateGetActor(ctx context.Context, addr address.Address, tsk types.TipSetKey) (*types.Actor, error)
+	StateLookupRobustAddress(ctx context.Context, addr address.Address, tsk types.TipSetKey) (address.Address, error)
 	StateListActors(context.Context, types.TipSetKey) ([]address.Address, error)
 	StateChangedActors(context.Context, cid.Cid, cid.Cid) (map[string]types.Actor, error)
 
 	StateMinerPower(ctx context.Context, addr address.Address, tsk types.TipSetKey) (*api.MinerPower, error)
 
-	StateMarketDeals(context.Context, types.TipSetKey) (map[string]api.MarketDeal, error)
+	StateMarketDeals(context.Context, types.TipSetKey) (map[string]*api.MarketDeal, error)
 
 	StateReadState(ctx context.Context, addr address.Address, tsk types.TipSetKey) (*api.ActorState, error)
 	StateGetReceipt(ctx context.Context, bcid cid.Cid, tsk types.TipSetKey) (*types.MessageReceipt, error)
-	StateVMCirculatingSupplyInternal(context.Context, types.TipSetKey) (api.CirculatingSupply, error)
+	CirculatingSupply(context.Context, types.TipSetKey) (api.CirculatingSupply, error)
 	StateNetworkName(context.Context) (dtypes.NetworkName, error)
 }
 
-type TipSetMessages struct {
-	Executed []*ExecutedMessage
-	Block    []*BlockMessages
+type ShouldBurnFn func(ctx context.Context, msg *types.Message, errcode exitcode.ExitCode) (bool, error)
+
+type VMAPI interface {
+	BurnFundsFn(ctx context.Context, ts *types.TipSet) (ShouldBurnFn, error)
+}
+
+type EthModuleAPI interface {
+	EthGetBlockByHash(ctx context.Context, blkHash ethtypes.EthHash, fullTxInfo bool) (ethtypes.EthBlock, error)
+	EthGetTransactionReceipt(ctx context.Context, txHash ethtypes.EthHash) (*api.EthTxReceipt, error)
+	EthGetTransactionByHash(ctx context.Context, txHash *ethtypes.EthHash) (*ethtypes.EthTx, error)
+}
+
+type ActorEventAPI interface {
+	GetActorEventsRaw(ctx context.Context, filter *types.ActorEventFilter) ([]*types.ActorEvent, error)
 }
 
 type MessageExecution struct {
@@ -79,36 +105,65 @@ type MessageExecution struct {
 	Implicit bool
 }
 
-type ExecutedMessage struct {
-	Cid           cid.Cid
-	Height        abi.ChainEpoch
-	Message       *types.Message
-	Receipt       *types.MessageReceipt
-	BlockHeader   *types.BlockHeader
-	Blocks        []cid.Cid // blocks this message appeared in
-	Index         uint64    // Message and receipt sequence in tipset
-	FromActorCode cid.Cid   // code of the actor the message is from
-	ToActorCode   cid.Cid   // code of the actor the message is to
-	GasOutputs    vm.GasOutputs
-}
-
 type BlockMessages struct {
 	Block        *types.BlockHeader     // block messages appeared in
 	BlsMessages  []*types.Message       // BLS messages in block `Block`
 	SecpMessages []*types.SignedMessage // SECP messages in block `Block`
 }
 
-// ChangeType denotes type of state change
-type ChangeType int
+// BlockMessageReceipts contains a block its messages and their corresponding receipts.
+// The Receipts are one-to-one with Messages index.
+type BlockMessageReceipts struct {
+	Block *types.BlockHeader
+	// Messages contained in Block.
+	Messages []types.ChainMsg
+	// Receipts contained in Block.
+	Receipts []*types.MessageReceipt
+	// MessageExectionIndex contains a mapping of Messages to their execution order in the tipset they were included.
+	MessageExecutionIndex map[types.ChainMsg]int
+}
 
-const (
-	ChangeTypeUnknown = 0
-	ChangeTypeAdd     = 1
-	ChangeTypeRemove  = 2
-	ChangeTypeModify  = 3
-)
+type MessageReceiptIterator struct {
+	idx      int
+	msgs     []types.ChainMsg
+	receipts []*types.MessageReceipt
+	exeIdx   map[types.ChainMsg]int
+}
 
-type ActorStateChange struct {
-	Actor      types.Actor
-	ChangeType ChangeType
+// Iterator returns a MessageReceiptIterator to conveniently iterate messages, their execution index, and their respective receipts.
+func (bmr *BlockMessageReceipts) Iterator() (*MessageReceiptIterator, error) {
+	if len(bmr.Messages) != len(bmr.Receipts) {
+		return nil, fmt.Errorf("invalid construction, expected equal number receipts (%d) and messages (%d)", len(bmr.Receipts), len(bmr.Messages))
+	}
+	return &MessageReceiptIterator{
+		idx:      0,
+		msgs:     bmr.Messages,
+		receipts: bmr.Receipts,
+		exeIdx:   bmr.MessageExecutionIndex,
+	}, nil
+}
+
+// HasNext returns `true` while there are messages/receipts to iterate.
+func (mri *MessageReceiptIterator) HasNext() bool {
+	if mri.idx < len(mri.msgs) {
+		return true
+	}
+	return false
+}
+
+// Next returns the next message, its execution index, and receipt in the MessageReceiptIterator.
+func (mri *MessageReceiptIterator) Next() (types.ChainMsg, int, *types.MessageReceipt) {
+	if mri.HasNext() {
+		msg := mri.msgs[mri.idx]
+		exeIdx := mri.exeIdx[msg]
+		rec := mri.receipts[mri.idx]
+		mri.idx++
+		return msg, exeIdx, rec
+	}
+	return nil, -1, nil
+}
+
+// Reset resets the MessageReceiptIterator to the first message/receipt.
+func (mri *MessageReceiptIterator) Reset() {
+	mri.idx = 0
 }

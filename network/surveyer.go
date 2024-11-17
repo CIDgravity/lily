@@ -2,32 +2,35 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	logging "github.com/ipfs/go-log/v2"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
+	"github.com/filecoin-project/lily/tasks/survey/minerprotocols"
 	"github.com/filecoin-project/lily/tasks/survey/peeragents"
-	logging "github.com/ipfs/go-log/v2"
 )
 
 const (
-	PeerAgentsTask = "peeragents" // task that observes connected peer agents
+	MinerProtocolsTask = "minerprotocols" // task that observes the supported protocols of miners on the Filecoin network.
+	PeerAgentsTask     = "peeragents"     // task that observes connected peer agents
 )
 
 var log = logging.Logger("lily/network")
 
 type API interface {
+	minerprotocols.API
 	peeragents.API
 }
 
 func NewSurveyer(api API, storage model.Storage, interval time.Duration, name string, tasks []string) (*Surveyer, error) {
 	if interval <= 0 {
-		return nil, xerrors.Errorf("surveyer interval must be greater than zero: %d", interval)
+		return nil, fmt.Errorf("surveyer interval must be greater than zero: %d", interval)
 	}
 
 	obs := &Surveyer{
@@ -41,8 +44,10 @@ func NewSurveyer(api API, storage model.Storage, interval time.Duration, name st
 		switch task {
 		case PeerAgentsTask:
 			obs.tasks[PeerAgentsTask] = peeragents.NewTask(api)
+		case MinerProtocolsTask:
+			obs.tasks[MinerProtocolsTask] = minerprotocols.NewTask(api)
 		default:
-			return nil, xerrors.Errorf("unknown task: %s", task)
+			return nil, fmt.Errorf("unknown task: %s", task)
 		}
 	}
 
@@ -66,7 +71,9 @@ func (s *Surveyer) Run(ctx context.Context) error {
 	defer close(s.done)
 
 	// Perform an initial tick before waiting
-	s.Tick(ctx)
+	if err := s.Tick(ctx); err != nil {
+		return err
+	}
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -76,7 +83,9 @@ func (s *Surveyer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			s.Tick(ctx)
+			if err := s.Tick(ctx); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -86,7 +95,7 @@ func (s *Surveyer) Done() <-chan struct{} {
 }
 
 func (s *Surveyer) Details() (string, map[string]interface{}) {
-	return "surveyer", map[string]interface{}{
+	return "surveyer", map[string]interface{}{ // nolint: misspell
 		"name":     s.name,
 		"interval": s.interval,
 	}

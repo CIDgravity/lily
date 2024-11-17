@@ -2,11 +2,11 @@ package miner
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -16,8 +16,7 @@ import (
 // the table is returned iff the miner actor code is greater than or equal to v7.
 // The table receives a new name since we cannot rename the miner_sector_info table, else we will break backfill.
 type MinerSectorInfoV7 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"miner_sector_infos_v7"`
+	tableName struct{} `pg:"miner_sector_infos_v7"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	MinerID   string   `pg:",pk,notnull"`
 	SectorID  uint64   `pg:",pk,use_zero"`
@@ -42,8 +41,7 @@ type MinerSectorInfoV7 struct {
 // MinerSectorInfoV1_6 is exported from the miner actor iff the actor code is less than v7.
 // The table keeps its original name since that's a requirement to support lily backfills
 type MinerSectorInfoV1_6 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"miner_sector_infos"`
+	tableName struct{} `pg:"miner_sector_infos"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	MinerID   string   `pg:",pk,notnull"`
 	SectorID  uint64   `pg:",pk,use_zero"`
@@ -63,8 +61,7 @@ type MinerSectorInfoV1_6 struct {
 }
 
 type MinerSectorInfoV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"miner_sector_infos"`
+	tableName struct{} `pg:"miner_sector_infos"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	MinerID   string   `pg:",pk,notnull"`
 	SectorID  uint64   `pg:",pk,use_zero"`
@@ -113,12 +110,10 @@ func (msi *MinerSectorInfoV7) AsVersion(version model.Version) (interface{}, boo
 
 func (msi *MinerSectorInfoV7) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_sector_infos_v7"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	m, ok := msi.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("MinerSectorInfoV7 not supported for schema version %s", version)
+		return fmt.Errorf("MinerSectorInfoV7 not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -137,8 +132,6 @@ func (ml MinerSectorInfoV7List) Persist(ctx context.Context, s model.StorageBatc
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_sector_infos_v7"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(ml) == 0 {
 		return nil
@@ -188,12 +181,10 @@ func (msi *MinerSectorInfoV1_6) AsVersion(version model.Version) (interface{}, b
 
 func (msi *MinerSectorInfoV1_6) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_sector_infos"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	m, ok := msi.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("MinerSectorInfoV7 not supported for schema version %s", version)
+		return fmt.Errorf("MinerSectorInfoV7 not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -210,8 +201,6 @@ func (ml MinerSectorInfoV1_6List) Persist(ctx context.Context, s model.StorageBa
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_sector_infos"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(ml) == 0 {
 		return nil

@@ -2,11 +2,11 @@ package messages
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -23,8 +23,7 @@ type ParsedMessage struct {
 }
 
 type ParsedMessageV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"parsed_messages"`
+	tableName struct{} `pg:"parsed_messages"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	Cid       string   `pg:",pk,notnull"`
 	From      string   `pg:",notnull"`
@@ -59,12 +58,10 @@ func (pm *ParsedMessage) AsVersion(version model.Version) (interface{}, bool) {
 
 func (pm *ParsedMessage) Persist(ctx context.Context, s model.StorageBatch, version model.Version) error {
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "parsed_messages"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vpm, ok := pm.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("ParsedMessage not supported for schema version %s", version)
+		return fmt.Errorf("ParsedMessage not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -84,15 +81,13 @@ func (pms ParsedMessages) Persist(ctx context.Context, s model.StorageBatch, ver
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "parsed_messages"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if version.Major != 1 {
 		vpms := make([]interface{}, 0, len(pms))
 		for _, m := range pms {
 			vpm, ok := m.AsVersion(version)
 			if !ok {
-				return xerrors.Errorf("ParsedMessage not supported for schema version %s", version)
+				return fmt.Errorf("ParsedMessage not supported for schema version %s", version)
 			}
 			vpms = append(vpms, vpm)
 		}

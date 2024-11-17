@@ -3,6 +3,13 @@ package itests
 import (
 	"context"
 	"fmt"
+	"testing"
+	"time"
+
+	"github.com/go-pg/pg/v10"
+	"github.com/ipfs/go-cid"
+	"github.com/stretchr/testify/require"
+
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/lily/config"
@@ -10,15 +17,10 @@ import (
 	"github.com/filecoin-project/lily/lens/lily"
 	lutil "github.com/filecoin-project/lily/lens/util"
 	"github.com/filecoin-project/lily/storage"
+
 	api2 "github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/chain/types"
 	"github.com/filecoin-project/lotus/node"
-	"github.com/go-pg/pg/v10"
-	"github.com/ipfs/go-cid"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/xerrors"
-	"testing"
-	"time"
 )
 
 type VectorWalkValidatorBuilder struct {
@@ -90,7 +92,7 @@ func (b VectorWalkValidatorBuilder) Build(ctx context.Context, t testing.TB) *Ve
 		RepoPath:    t.TempDir(),
 		Snapshot:    b.vector.Snapshot,
 		Genesis:     b.vector.Genesis,
-		ApiEndpoint: "/ip4/127.0.0.1/tcp/4321",
+		APIEndpoint: "/ip4/127.0.0.1/tcp/4321",
 	}
 
 	vw := &VectorWalkValidator{
@@ -141,26 +143,28 @@ type VectorWalkValidator struct {
 
 func (vw *VectorWalkValidator) Run(ctx context.Context) node.StopFunc {
 	// start the lily node
-	lilyAPI, apiCleanup := NewTestNode(vw.t, ctx, vw.lilyCfg)
+	lilyAPI, apiCleanup := NewTestNode(ctx, vw.t, vw.lilyCfg)
 	api := lilyAPI.(*lily.LilyNodeAPI)
 	vw.api = api
 
 	// create a walk config from the builder values
 	walkCfg := &lily.LilyWalkConfig{
-		From:                vw.from,
-		To:                  vw.to,
-		Name:                vw.t.Name(),
-		Tasks:               vw.tasks,
-		Window:              0,
-		RestartOnFailure:    false,
-		RestartOnCompletion: false,
-		RestartDelay:        0,
-		Storage:             "TestDatabase1",
+		From: vw.from,
+		To:   vw.to,
+		JobConfig: lily.LilyJobConfig{
+			Name:                vw.t.Name(),
+			Tasks:               vw.tasks,
+			Window:              0,
+			RestartOnFailure:    false,
+			RestartOnCompletion: false,
+			RestartDelay:        0,
+			Storage:             "TestDatabase1",
+		},
 	}
 
 	walkStart := time.Now()
 	// walk that walk
-	vw.t.Logf("starting walk from %d to %d with tasks %s", walkCfg.From, walkCfg.To, walkCfg.Tasks)
+	vw.t.Logf("starting walk from %d to %d with tasks %s", walkCfg.From, walkCfg.To, walkCfg.JobConfig.Tasks)
 	res, err := vw.api.LilyWalk(ctx, walkCfg)
 	require.NoError(vw.t, err)
 	require.NotEmpty(vw.t, res)
@@ -289,7 +293,7 @@ func actorsFromGenesisBlock(ctx context.Context, n *lily.LilyNodeAPI, ts *types.
 	return actorsChanged, nil
 }
 
-// StateForTipSet returns a TipSetState for TipSet `ts`. All state is derived from Lotus API calls.
+// StateForTipSet returns a TipSetState for Current `ts`. All state is derived from Lotus API calls.
 func StateForTipSet(ctx context.Context, n *lily.LilyNodeAPI, ts *types.TipSet) (*TipSetState, error) {
 	pts, err := n.ChainGetTipSet(ctx, ts.Parents())
 	if err != nil {
@@ -319,7 +323,7 @@ func StateForTipSet(ctx context.Context, n *lily.LilyNodeAPI, ts *types.TipSet) 
 	}
 
 	// messages from the parent tipset, their receipts will be in (child) ts
-	parentMessages, err := n.ChainAPI.Chain.MessagesForTipset(pts)
+	parentMessages, err := n.ChainAPI.Chain.MessagesForTipset(ctx, pts)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +340,7 @@ func StateForTipSet(ctx context.Context, n *lily.LilyNodeAPI, ts *types.TipSet) 
 
 		// map of parent messages to their receipts
 		for i := 0; i < len(parentMessages); i++ {
-			r, err := n.ChainAPI.Chain.GetParentReceipt(blk, i)
+			r, err := n.ChainAPI.Chain.GetParentReceipt(ctx, blk, i)
 			if err != nil {
 				return nil, err
 			}
@@ -361,7 +365,7 @@ func collectEpochsWithNullRoundsRange(ctx context.Context, api lens.API, from, t
 	}
 	if int64(head.Height()) != to {
 		// TODO
-		return nil, xerrors.Errorf("TODO to (%d) was a null round, not handled yet", to)
+		return nil, fmt.Errorf("TODO to (%d) was a null round, not handled yet", to)
 	}
 
 	tail, err := api.ChainGetTipSetByHeight(ctx, abi.ChainEpoch(from), types.EmptyTSK)
@@ -370,7 +374,7 @@ func collectEpochsWithNullRoundsRange(ctx context.Context, api lens.API, from, t
 	}
 	if int64(tail.Height()) != from {
 		// TODO
-		return nil, xerrors.Errorf("TODO from (%d) was a null round, not handled yet", from)
+		return nil, fmt.Errorf("TODO from (%d) was a null round, not handled yet", from)
 	}
 
 	out := make(map[int64]*types.TipSet)
@@ -399,7 +403,7 @@ func collectTipSetRange(ctx context.Context, api lens.API, from, to int64) ([]*t
 	}
 	if int64(head.Height()) != to {
 		// TODO
-		return nil, xerrors.Errorf("TODO to (%d) was a null round, not handled yet", to)
+		return nil, fmt.Errorf("TODO to (%d) was a null round, not handled yet", to)
 	}
 
 	tail, err := api.ChainGetTipSetByHeight(ctx, abi.ChainEpoch(from), types.EmptyTSK)
@@ -408,7 +412,7 @@ func collectTipSetRange(ctx context.Context, api lens.API, from, to int64) ([]*t
 	}
 	if int64(tail.Height()) != from {
 		// TODO
-		return nil, xerrors.Errorf("TODO from (%d) was a null round, not handled yet", from)
+		return nil, fmt.Errorf("TODO from (%d) was a null round, not handled yet", from)
 	}
 
 	out := make([]*types.TipSet, 0, head.Height()-tail.Height())

@@ -2,10 +2,10 @@ package power
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -20,8 +20,7 @@ type PowerActorClaim struct {
 }
 
 type PowerActorClaimV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName       struct{} `pg:"power_actor_claims"`
+	tableName       struct{} `pg:"power_actor_claims"` // nolint: structcheck
 	Height          int64    `pg:",pk,notnull,use_zero"`
 	MinerID         string   `pg:",pk,notnull"`
 	StateRoot       string   `pg:",pk,notnull"`
@@ -55,12 +54,10 @@ func (p *PowerActorClaim) Persist(ctx context.Context, s model.StorageBatch, ver
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "power_actor_claims"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vp, ok := p.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("PowerActorClaim not supported for schema version %s", version)
+		return fmt.Errorf("PowerActorClaim not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -74,8 +71,6 @@ func (pl PowerActorClaimList) Persist(ctx context.Context, s model.StorageBatch,
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "power_actor_claims"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(pl) == 0 {
 		return nil

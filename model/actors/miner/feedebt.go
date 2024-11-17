@@ -2,10 +2,10 @@ package miner
 
 import (
 	"context"
+	"fmt"
 
 	"go.opencensus.io/tag"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/lily/metrics"
 	"github.com/filecoin-project/lily/model"
@@ -20,8 +20,7 @@ type MinerFeeDebt struct {
 }
 
 type MinerFeeDebtV0 struct {
-	//lint:ignore U1000 tableName is a convention used by go-pg
-	tableName struct{} `pg:"miner_fee_debts"`
+	tableName struct{} `pg:"miner_fee_debts"` // nolint: structcheck
 	Height    int64    `pg:",pk,notnull,use_zero"`
 	MinerID   string   `pg:",pk,notnull"`
 	StateRoot string   `pg:",pk,notnull"`
@@ -54,12 +53,10 @@ func (m *MinerFeeDebt) Persist(ctx context.Context, s model.StorageBatch, versio
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_fee_debts"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	vm, ok := m.AsVersion(version)
 	if !ok {
-		return xerrors.Errorf("MinerFeeDebt not supported for schema version %s", version)
+		return fmt.Errorf("MinerFeeDebt not supported for schema version %s", version)
 	}
 
 	metrics.RecordCount(ctx, metrics.PersistModel, 1)
@@ -73,8 +70,6 @@ func (ml MinerFeeDebtList) Persist(ctx context.Context, s model.StorageBatch, ve
 	defer span.End()
 
 	ctx, _ = tag.New(ctx, tag.Upsert(metrics.Table, "miner_fee_debts"))
-	stop := metrics.Timer(ctx, metrics.PersistDuration)
-	defer stop()
 
 	if len(ml) == 0 {
 		return nil

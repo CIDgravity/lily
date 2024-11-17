@@ -2,15 +2,20 @@
 package reward
 
 import (
-	"github.com/filecoin-project/go-state-types/abi"
+	"fmt"
+
 	"github.com/ipfs/go-cid"
 
+	"github.com/filecoin-project/go-state-types/abi"
+	actorstypes "github.com/filecoin-project/go-state-types/actors"
+	"github.com/filecoin-project/go-state-types/manifest"
 	"github.com/filecoin-project/lily/chain/actors/adt"
 	"github.com/filecoin-project/lily/chain/actors/builtin"
-
 	miner3 "github.com/filecoin-project/specs-actors/v3/actors/builtin/miner"
 	reward3 "github.com/filecoin-project/specs-actors/v3/actors/builtin/reward"
 	smoothing3 "github.com/filecoin-project/specs-actors/v3/actors/util/smoothing"
+
+	"github.com/filecoin-project/lotus/chain/actors"
 )
 
 var _ State = (*state3)(nil)
@@ -66,7 +71,7 @@ func (s *state3) CumsumRealized() (reward3.Spacetime, error) {
 	return s.State.CumsumRealized, nil
 }
 
-func (s *state3) InitialPledgeForPower(qaPower abi.StoragePower, networkTotalPledge abi.TokenAmount, networkQAPower *builtin.FilterEstimate, circSupply abi.TokenAmount) (abi.TokenAmount, error) {
+func (s *state3) InitialPledgeForPower(qaPower abi.StoragePower, _ abi.TokenAmount, networkQAPower *builtin.FilterEstimate, circSupply abi.TokenAmount, epochsSinceRampStart int64, rampDurationEpochs uint64) (abi.TokenAmount, error) {
 	return miner3.InitialPledgeForPower(
 		qaPower,
 		s.State.ThisEpochBaselinePower,
@@ -86,4 +91,21 @@ func (s *state3) PreCommitDepositForPower(networkQAPower builtin.FilterEstimate,
 			VelocityEstimate: networkQAPower.VelocityEstimate,
 		},
 		sectorWeight), nil
+}
+
+func (s *state3) ActorKey() string {
+	return manifest.RewardKey
+}
+
+func (s *state3) ActorVersion() actorstypes.Version {
+	return actorstypes.Version3
+}
+
+func (s *state3) Code() cid.Cid {
+	code, ok := actors.GetActorCodeID(s.ActorVersion(), s.ActorKey())
+	if !ok {
+		panic(fmt.Errorf("didn't find actor %v code id for actor version %d", s.ActorKey(), s.ActorVersion()))
+	}
+
+	return code
 }
